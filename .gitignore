@@ -11,7 +11,7 @@ __pycache__/
 .Python
 *.so
 
-# Virtual environment
+# Virtual environmen  t
 .venv/
 venv/
 ENV/
