@@ -28,6 +28,7 @@ urlpatterns = [
     # Authentication endpoints
     path('register/', views.RegisterView.as_view(), name='register'),
     path('login/', views.LoginView.as_view(), name='login'),
+    path('login/ldap/', views.LDAPLoginView.as_view(), name='login-ldap'),
     path('add-user/', views.AddUserView.as_view(), name='add-user'),
     path('change-password/', views.ChangePasswordView.as_view(), name='change-password'),
     

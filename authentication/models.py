@@ -33,6 +33,7 @@ class User(AbstractBaseUser):
     AUTH_TYPE_CHOICES = [
         ('regular', 'Regular Email/Password'),
         ('azure', 'Azure AD SSO'),
+        ('ldap', 'LDAP Authentication'),
     ]
     
     # Core required fields

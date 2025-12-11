@@ -8,19 +8,32 @@ It will verify that the server can connect to Active Directory.
 Usage:
     python test_ldap_connection.py
 
-Make sure to update the configuration values below before running.
+The script uses environment variables from .env file.
+Make sure LDAP_SERVER_URL, LDAP_DOMAIN are set in your .env
 """
 
-from ldap3 import Server, Connection, ALL, NTLM
+import os
 import sys
 
+# Load environment variables from .env file
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    print("[!] python-dotenv not installed. Using hardcoded values or system env vars.")
+
+from ldap3 import Server, Connection, ALL, NTLM
+
 # ============================================
-# CONFIGURATION - UPDATE THESE VALUES
+# CONFIGURATION - Uses .env or fallback values
 # ============================================
-LDAP_SERVER = 'ldap://your-ad-server.company.local'  # Or use IP: ldap://192.168.1.5
-LDAP_DOMAIN = 'YOURDOMAIN'                           # NetBIOS Name (e.g. WHSO)
-TEST_USERNAME = 'svc_ldap_user'                      # Just the username (no domain prefix)
-TEST_PASSWORD = 'StrongPassword123'
+LDAP_SERVER = os.getenv('LDAP_SERVER_URL', 'ldap://your-ad-server.company.local')
+LDAP_DOMAIN = os.getenv('LDAP_DOMAIN', 'YOURDOMAIN')
+LDAP_SEARCH_BASE = os.getenv('LDAP_SEARCH_BASE', 'DC=whso,DC=gov,DC=ae')
+
+# Test credentials - UPDATE THESE or pass as arguments
+TEST_USERNAME = sys.argv[1] if len(sys.argv) > 1 else 'test_user'
+TEST_PASSWORD = sys.argv[2] if len(sys.argv) > 2 else 'test_password'
 # ============================================
 
 
@@ -76,5 +89,14 @@ def test_connection():
 
 if __name__ == "__main__":
     print("\nStarting LDAP connection test...\n")
+    print(f"[*] Using LDAP_SERVER_URL from env: {LDAP_SERVER}")
+    print(f"[*] Using LDAP_DOMAIN from env: {LDAP_DOMAIN}")
+    print(f"[*] Using LDAP_SEARCH_BASE from env: {LDAP_SEARCH_BASE}")
+    
+    if TEST_USERNAME == 'test_user':
+        print("\n[!] WARNING: Using default test credentials.")
+        print("[!] Usage: python test_ldap_connection.py <username> <password>")
+        print("")
+    
     success = test_connection()
     sys.exit(0 if success else 1)

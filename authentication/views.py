@@ -23,6 +23,7 @@ from .serializers import (
     BulkDeleteUsersSerializer, ResetUserPasswordSerializer
 )
 from .models import Group, UserGroup
+from .ldap_auth import LDAPAuthService
 from .permissions import (
     IsSuperAdmin, IsAdminOrSuperAdmin, IsGroupAdmin, 
     CanViewGroup, CanManageGroupUsers, CanAccessUserData
@@ -1654,3 +1655,50 @@ class ResetUserPasswordView(APIView):
             return Response({
                 'detail': 'An unexpected error occurred during password reset'
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class LDAPLoginView(APIView):
+    """
+    API endpoint for LDAP user login.
+    """
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        username = request.data.get('username')
+        password = request.data.get('password')
+
+        if not username or not password:
+            return Response({
+                'detail': 'Username and password are required.'
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        ldap_service = LDAPAuthService()
+        user, tokens = ldap_service.authenticate(username, password)
+
+        if user and tokens:
+            # Log successful login
+            log_security_event(
+                event_type='successful_login',
+                user=user,
+                request=request,
+                details={'login_method': 'ldap'}
+            )
+            
+            return Response({
+                'message': 'Login successful',
+                'user': UserProfileSerializer(user).data,
+                'tokens': tokens
+            }, status=status.HTTP_200_OK)
+        else:
+            # Log failed login
+            log_security_event(
+                event_type='failed_login',
+                user=None,
+                request=request,
+                details={'login_method': 'ldap', 'username': username}
+            )
+            
+            return Response({
+                'detail': 'Invalid LDAP credentials.'
+            }, status=status.HTTP_401_UNAUTHORIZED)
+
