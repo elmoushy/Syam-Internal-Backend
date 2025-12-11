@@ -56,3 +56,6 @@ webencodings==0.5.1  # Required by bleach
 python-magic>=0.4.27  # File type detection via magic bytes (Linux/Mac)
 # python-magic-bin>=0.4.14  # Windows binary for libmagic (Windows only - commented for Linux)
 django-redis>=5.4.0  # Redis cache backend (optional, falls back to LocMemCache)
+
+# LDAP Authentication
+ldap3>=2.9.1  # Pure Python LDAP client for Active Directory authentication
