@@ -250,8 +250,8 @@ REST_FRAMEWORK = {
 from datetime import timedelta
 
 SIMPLE_JWT = {
-    'ACCESS_TOKEN_LIFETIME': timedelta(minutes=30),  # Reduced from 8 hours to 30 minutes
-    'REFRESH_TOKEN_LIFETIME': timedelta(hours=4),  # Reduced from 24 hours to 4 hours
+    'ACCESS_TOKEN_LIFETIME': timedelta(days=60),  # 60 days for persistent sessions
+    'REFRESH_TOKEN_LIFETIME': timedelta(days=365),  # 1 year for long-term persistence
     'ROTATE_REFRESH_TOKENS': True,  # Generate new refresh token on refresh
     'BLACKLIST_AFTER_ROTATION': False,  # Disabled for Oracle compatibility (no token_blacklist app)
     'UPDATE_LAST_LOGIN': True,  # Update user's last_login field on token refresh
