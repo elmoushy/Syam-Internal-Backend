@@ -20,9 +20,12 @@ from .serializers import (
     GroupDetailSerializer, CreateGroupSerializer, AddUserToGroupSerializer,
     UpdateUserGroupSerializer, UserGroupSerializer,
     UserRegistrationSerializer, UserLoginSerializer, ChangePasswordSerializer,
-    BulkDeleteUsersSerializer, ResetUserPasswordSerializer
+    BulkDeleteUsersSerializer, ResetUserPasswordSerializer,
+    RoleManagementSerializer, RoleCreateSerializer, RoleUpdateSerializer,
+    AssignPageToRoleSerializer, BulkAssignPagesToRoleSerializer,
+    RemovePageFromRoleSerializer, RoleListSerializer
 )
-from .models import Group, UserGroup
+from .models import Group, UserGroup, Role, PagePermission
 from .ldap_auth import LDAPAuthService
 from .permissions import (
     IsSuperAdmin, IsAdminOrSuperAdmin, IsGroupAdmin, 
@@ -728,6 +731,9 @@ class UserSearchView(APIView):
 class UserRoleUpdateView(APIView):
     """
     API endpoint for updating user roles (super_admin only).
+    
+    Updates the direct 'role' column (super_admin, admin, user) which controls
+    endpoint access level.
     """
     
     permission_classes = [IsSuperAdmin]
@@ -745,7 +751,8 @@ class UserRoleUpdateView(APIView):
             
             old_role = target_user.role
             target_user.role = new_role
-            target_user.save()
+            # Use skip_role_sync to prevent auto-sync from overwriting the manual role change
+            target_user.save(skip_role_sync=True)
             
             logger.info(f"User {target_user.email} role changed from {old_role} to {new_role} by {request.user.email}")
             
@@ -763,6 +770,115 @@ class UserRoleUpdateView(APIView):
             logger.error(f"Error updating user role: {str(e)}")
             return Response({
                 'detail': 'Error updating user role'
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class AssignUserRoleView(APIView):
+    """
+    API endpoint for assigning a user_role (from Role table) to a user.
+    
+    This assigns the user to a Role from the Role table (e.g., News_admin),
+    which controls page-level permissions. When assigned, the user's 'role'
+    column is automatically updated based on the assigned Role.
+    
+    PUT: Assign a role to user (set user_role FK)
+    DELETE: Remove role from user (clear user_role FK, optionally reset role to 'user')
+    """
+    
+    permission_classes = [IsSuperAdmin]
+    
+    def put(self, request, user_id):
+        """Assign a role from Role table to a user."""
+        try:
+            target_user = User.objects.get(id=user_id)
+            role_id = request.data.get('role_id')
+            
+            if role_id is None:
+                return Response({
+                    'role_id': ['This field is required.']
+                }, status=status.HTTP_400_BAD_REQUEST)
+            
+            # Get the role
+            try:
+                role = Role.objects.get(id=role_id)
+            except Role.DoesNotExist:
+                return Response({
+                    'role_id': ['Role not found.']
+                }, status=status.HTTP_400_BAD_REQUEST)
+            
+            old_user_role = target_user.user_role.name if target_user.user_role else None
+            old_role = target_user.role
+            
+            # Assign the user_role - the save() method will auto-update the role column
+            target_user.user_role = role
+            target_user.save()
+            
+            logger.info(
+                f"User {target_user.email} assigned to role '{role.name}' "
+                f"(was: {old_user_role}, access level: {old_role} -> {target_user.role}) "
+                f"by {request.user.email}"
+            )
+            
+            serializer = UserSerializer(target_user)
+            return Response({
+                'user': serializer.data,
+                'old_user_role': old_user_role,
+                'new_user_role': role.name,
+                'message': f'User assigned to role "{role.display_name or role.name}" successfully'
+            }, status=status.HTTP_200_OK)
+            
+        except User.DoesNotExist:
+            return Response({
+                'detail': 'User not found.'
+            }, status=status.HTTP_404_NOT_FOUND)
+        except Exception as e:
+            logger.error(f"Error assigning user role: {str(e)}")
+            return Response({
+                'detail': 'Error assigning user role'
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    
+    def delete(self, request, user_id):
+        """Remove the user_role from a user (optionally reset role to 'user')."""
+        try:
+            target_user = User.objects.get(id=user_id)
+            reset_role = request.data.get('reset_role', True)
+            
+            old_user_role = target_user.user_role.name if target_user.user_role else None
+            
+            if not old_user_role:
+                return Response({
+                    'detail': 'User does not have a role assigned.'
+                }, status=status.HTTP_400_BAD_REQUEST)
+            
+            # Clear the user_role
+            target_user.user_role = None
+            
+            # Optionally reset the role to 'user'
+            if reset_role:
+                target_user.role = User.ROLE_USER
+            
+            target_user.save()
+            
+            logger.info(
+                f"User {target_user.email} removed from role '{old_user_role}' "
+                f"(reset_role: {reset_role}) by {request.user.email}"
+            )
+            
+            serializer = UserSerializer(target_user)
+            return Response({
+                'user': serializer.data,
+                'old_user_role': old_user_role,
+                'message': f'User removed from role "{old_user_role}" successfully'
+            }, status=status.HTTP_200_OK)
+            
+        except User.DoesNotExist:
+            return Response({
+                'detail': 'User not found.'
+            }, status=status.HTTP_404_NOT_FOUND)
+        except Exception as e:
+            logger.error(f"Error removing user role: {str(e)}")
+            return Response({
+                'detail': 'Error removing user role'
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
@@ -947,10 +1063,10 @@ class DashboardStatsView(APIView):
                 total_groups = Group.objects.count()
                 active_users = User.objects.filter(is_active=True).count()
                 
-                # Role breakdown
-                super_admins = User.objects.filter(role='super_admin').count()
-                admins = User.objects.filter(role='admin').count()
-                regular_users = User.objects.filter(role='user').count()
+                # Role breakdown - use user_role__name for ForeignKey lookup
+                super_admins = User.objects.filter(user_role__name='super_admin').count()
+                admins = User.objects.filter(user_role__name='admin').count()
+                regular_users = User.objects.filter(user_role__name='user').count()
                 
                 # Recent activity - get recent group memberships
                 recent_memberships = UserGroup.objects.select_related(
@@ -974,10 +1090,10 @@ class DashboardStatsView(APIView):
                 total_users = users_in_groups.count()
                 active_users = users_in_groups.filter(is_active=True).count()
                 
-                # Role breakdown for users in admin's groups
-                super_admins = users_in_groups.filter(role='super_admin').count()
-                admins = users_in_groups.filter(role='admin').count()
-                regular_users = users_in_groups.filter(role='user').count()
+                # Role breakdown for users in admin's groups - use user_role__name
+                super_admins = users_in_groups.filter(user_role__name='super_admin').count()
+                admins = users_in_groups.filter(user_role__name='admin').count()
+                regular_users = users_in_groups.filter(user_role__name='user').count()
                 
                 # Recent activity in admin's groups
                 recent_memberships = UserGroup.objects.filter(
@@ -1701,4 +1817,467 @@ class LDAPLoginView(APIView):
             return Response({
                 'detail': 'Invalid LDAP credentials.'
             }, status=status.HTTP_401_UNAUTHORIZED)
+
+
+# ============================================================================
+# ROLE MANAGEMENT VIEWS (super_admin only - for assigning pages to roles)
+# ============================================================================
+
+# Define all available pages in the system (configurable)
+AVAILABLE_PAGES = [
+    # {'name': 'news', 'display_name': 'الأخبار', 'description': 'View news page'},
+    # {'name': 'quick-links', 'display_name': 'الروابط السريعة', 'description': 'View quick links page'},
+    # {'name': 'surveys', 'display_name': 'الاستطلاعات', 'description': 'View surveys page'},
+    {'name': 'manage-surveys', 'display_name': 'إدارة الاستطلاعات', 'description': 'Manage surveys (create, edit, delete)'},
+    {'name': 'manage-news', 'display_name': 'إدارة الأخبار', 'description': 'Manage news articles (create, edit, delete)'},
+    {'name': 'manage-quicklinks', 'display_name': 'إدارة الروابط السريعة', 'description': 'Manage quick links (create, edit, delete)'},
+    # {'name': 'manage-users', 'display_name': 'إدارة المستخدمين', 'description': 'Manage users (create, edit, delete, change roles)'},
+    # {'name': 'manage-roles', 'display_name': 'إدارة الأدوار', 'description': 'Manage roles and page permissions'},
+    # {'name': 'system-settings', 'display_name': 'إعدادات النظام', 'description': 'System configuration settings'},
+    # {'name': 'chat', 'display_name': 'المحادثات', 'description': 'Internal chat feature'},
+    # {'name': 'organization-chart', 'display_name': 'هيكل الشركة', 'description': 'View organization chart'},
+]
+
+
+class RoleManagementListView(APIView):
+    """
+    API endpoint for listing all roles with their permissions.
+    GET: List all roles with page permissions and user counts.
+    POST: Create a new role (super_admin only).
+    """
+    
+    authentication_classes = [UniversalAuthentication]
+    permission_classes = [IsSuperAdmin]
+    
+    def get(self, request):
+        """Get all roles with their page permissions."""
+        try:
+            roles = Role.objects.all().prefetch_related('page_permissions', 'users')
+            serializer = RoleManagementSerializer(roles, many=True)
+            
+            return Response({
+                'roles': serializer.data,
+                'total': roles.count()
+            }, status=status.HTTP_200_OK)
+            
+        except Exception as e:
+            logger.error(f"Error retrieving roles: {str(e)}")
+            return Response({
+                'detail': 'Error retrieving roles'
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    
+    def post(self, request):
+        """Create a new role."""
+        try:
+            serializer = RoleCreateSerializer(data=request.data)
+            
+            if serializer.is_valid():
+                role = serializer.save()
+                logger.info(f"Role created: {role.name} by {request.user.email}")
+                
+                return Response({
+                    'role': RoleManagementSerializer(role).data,
+                    'message': 'Role created successfully'
+                }, status=status.HTTP_201_CREATED)
+            
+            return Response({
+                'errors': serializer.errors
+            }, status=status.HTTP_400_BAD_REQUEST)
+            
+        except Exception as e:
+            logger.error(f"Error creating role: {str(e)}")
+            return Response({
+                'detail': 'Error creating role'
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class RoleManagementDetailView(APIView):
+    """
+    API endpoint for managing a specific role.
+    GET: Get role details with permissions.
+    PUT/PATCH: Update role (display_name, description).
+    DELETE: Delete role (only non-system roles).
+    """
+    
+    authentication_classes = [UniversalAuthentication]
+    permission_classes = [IsSuperAdmin]
+    
+    def get_object(self, role_id):
+        """Get role by ID."""
+        try:
+            return Role.objects.prefetch_related('page_permissions', 'users').get(pk=role_id)
+        except Role.DoesNotExist:
+            return None
+    
+    def get(self, request, role_id):
+        """Get role details."""
+        role = self.get_object(role_id)
+        if not role:
+            return Response({
+                'detail': 'Role not found'
+            }, status=status.HTTP_404_NOT_FOUND)
+        
+        serializer = RoleManagementSerializer(role)
+        return Response({
+            'role': serializer.data
+        }, status=status.HTTP_200_OK)
+    
+    def patch(self, request, role_id):
+        """Update role details."""
+        role = self.get_object(role_id)
+        if not role:
+            return Response({
+                'detail': 'Role not found'
+            }, status=status.HTTP_404_NOT_FOUND)
+        
+        serializer = RoleUpdateSerializer(role, data=request.data, partial=True)
+        
+        if serializer.is_valid():
+            serializer.save()
+            logger.info(f"Role updated: {role.name} by {request.user.email}")
+            
+            return Response({
+                'role': RoleManagementSerializer(role).data,
+                'message': 'Role updated successfully'
+            }, status=status.HTTP_200_OK)
+        
+        return Response({
+            'errors': serializer.errors
+        }, status=status.HTTP_400_BAD_REQUEST)
+    
+    def delete(self, request, role_id):
+        """Delete a role (only non-system roles)."""
+        role = self.get_object(role_id)
+        if not role:
+            return Response({
+                'detail': 'Role not found'
+            }, status=status.HTTP_404_NOT_FOUND)
+        
+        if role.is_system_role:
+            return Response({
+                'detail': 'Cannot delete system roles'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Check if any users have this role
+        users_count = role.users.count()
+        if users_count > 0:
+            return Response({
+                'detail': f'Cannot delete role. {users_count} users are assigned to this role.',
+                'users_count': users_count
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        role_name = role.name
+        role.delete()
+        logger.info(f"Role deleted: {role_name} by {request.user.email}")
+        
+        return Response({
+            'message': 'Role deleted successfully'
+        }, status=status.HTTP_200_OK)
+
+
+class RolePermissionsView(APIView):
+    """
+    API endpoint for managing page permissions for a role.
+    GET: Get all permissions for a role.
+    POST: Assign a page permission to a role.
+    DELETE: Remove a page permission from a role.
+    """
+    
+    authentication_classes = [UniversalAuthentication]
+    permission_classes = [IsSuperAdmin]
+    
+    def get_role(self, role_id):
+        """Get role by ID."""
+        try:
+            return Role.objects.prefetch_related('page_permissions').get(pk=role_id)
+        except Role.DoesNotExist:
+            return None
+    
+    def get(self, request, role_id):
+        """Get all page permissions for a role."""
+        role = self.get_role(role_id)
+        if not role:
+            return Response({
+                'detail': 'Role not found'
+            }, status=status.HTTP_404_NOT_FOUND)
+        
+        permissions = role.page_permissions.all()
+        
+        return Response({
+            'role_id': role.id,
+            'role_name': role.name,
+            'permissions': [
+                {
+                    'id': p.id,
+                    'name': p.name,
+                    'display_name': p.display_name,
+                    'description': p.description
+                }
+                for p in permissions
+            ]
+        }, status=status.HTTP_200_OK)
+    
+    def post(self, request, role_id):
+        """Assign a page permission to a role."""
+        role = self.get_role(role_id)
+        if not role:
+            return Response({
+                'detail': 'Role not found'
+            }, status=status.HTTP_404_NOT_FOUND)
+        
+        serializer = AssignPageToRoleSerializer(data=request.data)
+        
+        if serializer.is_valid():
+            page_name = serializer.validated_data['page_name']
+            display_name = serializer.validated_data.get('display_name', '')
+            description = serializer.validated_data.get('description', '')
+            
+            # Auto-fill display_name from AVAILABLE_PAGES if not provided
+            if not display_name:
+                for page in AVAILABLE_PAGES:
+                    if page['name'] == page_name:
+                        display_name = page['display_name']
+                        description = description or page['description']
+                        break
+            
+            # Check if permission already exists
+            if PagePermission.objects.filter(role=role, name=page_name).exists():
+                return Response({
+                    'detail': f'Role already has permission for page: {page_name}'
+                }, status=status.HTTP_400_BAD_REQUEST)
+            
+            # Create the permission
+            permission = PagePermission.objects.create(
+                role=role,
+                name=page_name,
+                display_name=display_name,
+                description=description
+            )
+            
+            logger.info(f"Permission assigned: {page_name} to role {role.name} by {request.user.email}")
+            
+            return Response({
+                'permission': {
+                    'id': permission.id,
+                    'name': permission.name,
+                    'display_name': permission.display_name,
+                    'description': permission.description
+                },
+                'message': f'Permission {page_name} assigned to role {role.name}'
+            }, status=status.HTTP_201_CREATED)
+        
+        return Response({
+            'errors': serializer.errors
+        }, status=status.HTTP_400_BAD_REQUEST)
+    
+    def delete(self, request, role_id):
+        """Remove a page permission from a role."""
+        role = self.get_role(role_id)
+        if not role:
+            return Response({
+                'detail': 'Role not found'
+            }, status=status.HTTP_404_NOT_FOUND)
+        
+        serializer = RemovePageFromRoleSerializer(data=request.data)
+        
+        if serializer.is_valid():
+            page_name = serializer.validated_data['page_name']
+            
+            try:
+                permission = PagePermission.objects.get(role=role, name=page_name)
+                permission.delete()
+                
+                logger.info(f"Permission removed: {page_name} from role {role.name} by {request.user.email}")
+                
+                return Response({
+                    'message': f'Permission {page_name} removed from role {role.name}'
+                }, status=status.HTTP_200_OK)
+                
+            except PagePermission.DoesNotExist:
+                return Response({
+                    'detail': f'Role does not have permission for page: {page_name}'
+                }, status=status.HTTP_404_NOT_FOUND)
+        
+        return Response({
+            'errors': serializer.errors
+        }, status=status.HTTP_400_BAD_REQUEST)
+
+
+class BulkAssignPermissionsView(APIView):
+    """
+    API endpoint for bulk assigning multiple pages to a role.
+    POST: Assign multiple pages to a role at once.
+    PUT: Replace all permissions for a role with the given list.
+    """
+    
+    authentication_classes = [UniversalAuthentication]
+    permission_classes = [IsSuperAdmin]
+    
+    def get_role(self, role_id):
+        """Get role by ID."""
+        try:
+            return Role.objects.prefetch_related('page_permissions').get(pk=role_id)
+        except Role.DoesNotExist:
+            return None
+    
+    def post(self, request, role_id):
+        """Bulk assign pages to a role (adds to existing)."""
+        role = self.get_role(role_id)
+        if not role:
+            return Response({
+                'detail': 'Role not found'
+            }, status=status.HTTP_404_NOT_FOUND)
+        
+        serializer = BulkAssignPagesToRoleSerializer(data=request.data)
+        
+        if serializer.is_valid():
+            page_names = serializer.validated_data['page_names']
+            created = []
+            skipped = []
+            
+            with transaction.atomic():
+                for page_name in page_names:
+                    # Find page info
+                    display_name = ''
+                    description = ''
+                    for page in AVAILABLE_PAGES:
+                        if page['name'] == page_name:
+                            display_name = page['display_name']
+                            description = page['description']
+                            break
+                    
+                    # Check if already exists
+                    if PagePermission.objects.filter(role=role, name=page_name).exists():
+                        skipped.append(page_name)
+                        continue
+                    
+                    PagePermission.objects.create(
+                        role=role,
+                        name=page_name,
+                        display_name=display_name,
+                        description=description
+                    )
+                    created.append(page_name)
+            
+            logger.info(f"Bulk permissions assigned to role {role.name}: {created} by {request.user.email}")
+            
+            return Response({
+                'message': f'Assigned {len(created)} permissions to role {role.name}',
+                'created': created,
+                'skipped': skipped
+            }, status=status.HTTP_201_CREATED)
+        
+        return Response({
+            'errors': serializer.errors
+        }, status=status.HTTP_400_BAD_REQUEST)
+    
+    def put(self, request, role_id):
+        """Replace all permissions for a role with the given list."""
+        role = self.get_role(role_id)
+        if not role:
+            return Response({
+                'detail': 'Role not found'
+            }, status=status.HTTP_404_NOT_FOUND)
+        
+        serializer = BulkAssignPagesToRoleSerializer(data=request.data)
+        
+        if serializer.is_valid():
+            page_names = serializer.validated_data['page_names']
+            
+            with transaction.atomic():
+                # Delete existing permissions
+                old_count = role.page_permissions.count()
+                role.page_permissions.all().delete()
+                
+                # Create new permissions
+                for page_name in page_names:
+                    display_name = ''
+                    description = ''
+                    for page in AVAILABLE_PAGES:
+                        if page['name'] == page_name:
+                            display_name = page['display_name']
+                            description = page['description']
+                            break
+                    
+                    PagePermission.objects.create(
+                        role=role,
+                        name=page_name,
+                        display_name=display_name,
+                        description=description
+                    )
+            
+            logger.info(f"Permissions replaced for role {role.name}: {page_names} by {request.user.email}")
+            
+            return Response({
+                'message': f'Replaced {old_count} permissions with {len(page_names)} new permissions',
+                'pages': page_names,
+                'role': RoleManagementSerializer(role).data
+            }, status=status.HTTP_200_OK)
+        
+        return Response({
+            'errors': serializer.errors
+        }, status=status.HTTP_400_BAD_REQUEST)
+
+
+class AvailablePagesView(APIView):
+    """
+    API endpoint for getting all available pages that can be assigned.
+    Returns the list of all configurable pages with their current role assignments.
+    """
+    
+    authentication_classes = [UniversalAuthentication]
+    permission_classes = [IsSuperAdmin]
+    
+    def get(self, request):
+        """Get all available pages with their role assignments."""
+        try:
+            pages_data = []
+            
+            for page in AVAILABLE_PAGES:
+                # Get roles that have this page permission
+                assigned_roles = list(
+                    PagePermission.objects.filter(name=page['name'])
+                    .values_list('role__name', flat=True)
+                )
+                
+                pages_data.append({
+                    'name': page['name'],
+                    'display_name': page['display_name'],
+                    'description': page['description'],
+                    'assigned_roles': assigned_roles
+                })
+            
+            return Response({
+                'pages': pages_data,
+                'total': len(pages_data)
+            }, status=status.HTTP_200_OK)
+            
+        except Exception as e:
+            logger.error(f"Error retrieving available pages: {str(e)}")
+            return Response({
+                'detail': 'Error retrieving available pages'
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class AssignableUsersView(APIView):
+    """
+    API endpoint for listing users available for role assignment.
+    Excludes super_admin users.
+    Returns all users without pagination.
+    """
+    
+    permission_classes = [IsAdminOrSuperAdmin]
+    
+    def get(self, request):
+        """List all assignable users (excludes super_admins)."""
+        # Filter out super_admin users and select related user_role to avoid N+1
+        users = User.objects.exclude(role='super_admin').select_related('user_role').order_by('email')
+        
+        # Serialize all users (no pagination)
+        serializer = UserSerializer(users, many=True)
+        
+        return Response({
+            'users': serializer.data,
+            'count': users.count()
+        }, status=status.HTTP_200_OK)
 

@@ -6,8 +6,40 @@ hash fields instead of direct encrypted field queries.
 """
 
 import hashlib
+import logging
 from django.contrib.auth.models import BaseUserManager
 from django.db import models
+
+logger = logging.getLogger(__name__)
+
+
+def get_role_by_name(role_name):
+    """
+    Helper function to get or create a Role by name.
+    Imported here to avoid circular imports.
+    
+    Args:
+        role_name: String name of the role (e.g., 'user', 'admin', 'super_admin')
+        
+    Returns:
+        Role instance
+    """
+    from .models import Role
+    
+    try:
+        role, created = Role.objects.get_or_create(
+            name=role_name,
+            defaults={
+                'display_name': role_name.replace('_', ' ').title(),
+                'is_system_role': role_name in [Role.SUPER_ADMIN, Role.ADMIN, Role.USER]
+            }
+        )
+        if created:
+            logger.info(f"Created new role: {role_name}")
+        return role
+    except Exception as e:
+        logger.error(f"Error getting/creating role '{role_name}': {e}")
+        return None
 
 
 class OracleCompatibleUserManager(BaseUserManager):
@@ -44,10 +76,28 @@ class OracleCompatibleUserManager(BaseUserManager):
             else:
                 raise ValueError('Email must be provided for regular users')
         
+        # Handle role assignment - support both string and Role instance
+        role_value = extra_fields.pop('role', None)
+        user_role = extra_fields.pop('user_role', None)
+        
+        # Determine the role to assign
+        if user_role is None:
+            if role_value:
+                # Role was passed as string (backward compatibility)
+                from .models import Role
+                if isinstance(role_value, str):
+                    user_role = get_role_by_name(role_value)
+                elif hasattr(role_value, 'pk'):  # Role instance
+                    user_role = role_value
+            else:
+                # Default to 'user' role
+                user_role = get_role_by_name('user')
+        
         user = self.model(
             username=username,
             email=email,
             auth_type=auth_type,
+            user_role=user_role,
             **extra_fields
         )
         
@@ -73,8 +123,15 @@ class OracleCompatibleUserManager(BaseUserManager):
             User instance with admin privileges
         """
         extra_fields.setdefault('is_active', True)
-        extra_fields.setdefault('role', 'super_admin')
         extra_fields.setdefault('auth_type', 'regular')  # Default to regular for superuser creation
+        
+        # Set role to super_admin
+        from .models import Role
+        super_admin_role = get_role_by_name(Role.SUPER_ADMIN)
+        extra_fields['user_role'] = super_admin_role
+        
+        # Remove 'role' if present to avoid conflict
+        extra_fields.pop('role', None)
         
         return self.create_user(username, email, password, **extra_fields)
     

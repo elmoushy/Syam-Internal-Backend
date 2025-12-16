@@ -1,9 +1,58 @@
 """
 Custom permission classes for the role-based access control system.
+
+This module provides both legacy role-based permissions (for backward compatibility)
+and new dynamic page-based permissions using the Role and PagePermission models.
 """
 
 from rest_framework.permissions import BasePermission
-from .models import UserGroup
+from .models import UserGroup, PagePermission
+
+
+class HasPagePermission(BasePermission):
+    """
+    Dynamic permission class that checks page-level access.
+    
+    Usage in views:
+        permission_classes = [HasPagePermission]
+        page_permission_name = 'manage-surveys'  # Set on view class
+    
+    Or use the factory method:
+        permission_classes = [HasPagePermission.for_page('manage-surveys')]
+    """
+    
+    page_name = None  # Should be set on the view or passed to for_page()
+    
+    @classmethod
+    def for_page(cls, page_name):
+        """
+        Factory method to create a permission class for a specific page.
+        
+        Args:
+            page_name: The page identifier to check permissions for
+            
+        Returns:
+            A permission class configured for the specified page
+        """
+        class PageSpecificPermission(cls):
+            pass
+        PageSpecificPermission.page_name = page_name
+        PageSpecificPermission.__name__ = f'HasPagePermission_{page_name}'
+        return PageSpecificPermission
+    
+    def has_permission(self, request, view):
+        if not (request.user and request.user.is_authenticated):
+            return False
+        
+        # Determine the page name from view attribute or class attribute
+        page_name = getattr(view, 'page_permission_name', None) or self.page_name
+        
+        if not page_name:
+            # If no page name specified, fall back to allowing authenticated users
+            return True
+        
+        # Use the User model's has_page_permission method
+        return request.user.has_page_permission(page_name)
 
 
 class IsSuperAdmin(BasePermission):

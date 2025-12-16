@@ -9,11 +9,121 @@ from rest_framework import serializers
 from django.contrib.auth import get_user_model, authenticate
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError
-from .models import Group, UserGroup
+from .models import Group, UserGroup, Role, PagePermission
 from weaponpowercloud_backend.security_utils import validate_and_sanitize_text_input, sanitize_html_input
 
 
 User = get_user_model()
+
+
+class RoleSerializer(serializers.ModelSerializer):
+    """
+    Serializer for Role model.
+    """
+    
+    class Meta:
+        model = Role
+        fields = [
+            'id',
+            'name',
+            'display_name',
+            'description',
+            'is_system_role',
+            'created_at',
+            'updated_at'
+        ]
+        read_only_fields = ['id', 'created_at', 'updated_at']
+
+
+class RoleListSerializer(serializers.ModelSerializer):
+    """
+    Lightweight serializer for Role list views.
+    """
+    
+    class Meta:
+        model = Role
+        fields = ['id', 'name', 'display_name', 'is_system_role']
+
+
+class PagePermissionSerializer(serializers.ModelSerializer):
+    """
+    Serializer for PagePermission model.
+    """
+    
+    role_name = serializers.CharField(source='role.name', read_only=True)
+    role_display_name = serializers.CharField(source='role.display_name', read_only=True)
+    
+    class Meta:
+        model = PagePermission
+        fields = [
+            'id',
+            'name',
+            'display_name',
+            'description',
+            'role',
+            'role_name',
+            'role_display_name',
+            'created_at'
+        ]
+        read_only_fields = ['id', 'created_at']
+
+
+class PagePermissionCreateSerializer(serializers.ModelSerializer):
+    """
+    Serializer for creating page permissions.
+    """
+    
+    role_id = serializers.IntegerField(write_only=True)
+    
+    class Meta:
+        model = PagePermission
+        fields = ['name', 'display_name', 'description', 'role_id']
+    
+    def validate_role_id(self, value):
+        """Validate that the role exists."""
+        try:
+            Role.objects.get(pk=value)
+        except Role.DoesNotExist:
+            raise serializers.ValidationError("Role does not exist.")
+        return value
+    
+    def validate_name(self, value):
+        """Validate and sanitize page name."""
+        return validate_and_sanitize_text_input(value, max_length=100, field_name="Page name")
+    
+    def create(self, validated_data):
+        """Create page permission with role FK."""
+        role_id = validated_data.pop('role_id')
+        role = Role.objects.get(pk=role_id)
+        return PagePermission.objects.create(role=role, **validated_data)
+
+
+class RoleWithPermissionsSerializer(serializers.ModelSerializer):
+    """
+    Serializer for Role with its page permissions.
+    """
+    
+    page_permissions = PagePermissionSerializer(many=True, read_only=True)
+    pages = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = Role
+        fields = [
+            'id',
+            'name',
+            'display_name',
+            'description',
+            'is_system_role',
+            'page_permissions',
+            'pages',
+            'created_at',
+            'updated_at'
+        ]
+        read_only_fields = ['id', 'created_at', 'updated_at']
+    
+    def get_pages(self, obj):
+        """Get list of page names this role has access to."""
+        return list(obj.page_permissions.values_list('name', flat=True))
 
 
 class UserSerializer(serializers.ModelSerializer):
@@ -21,9 +131,18 @@ class UserSerializer(serializers.ModelSerializer):
     Serializer for user information.
     
     Returns basic user information that can be safely exposed to the frontend.
+    
+    Note on role fields:
+    - 'role': Direct access level (super_admin, admin, user) from AUTH_USER.role column
+    - 'user_role_id': FK to Role table for page-level permissions
+    - 'user_role_name': Name of the Role from Role table (e.g., News_admin)
     """
     
     full_name = serializers.SerializerMethodField()
+    role = serializers.CharField(read_only=True)  # Direct column value
+    user_role_id = serializers.IntegerField(source='user_role.id', read_only=True, allow_null=True)
+    user_role_name = serializers.CharField(source='user_role.name', read_only=True, allow_null=True)
+    allowed_pages = serializers.SerializerMethodField()
     
     class Meta:
         model = User
@@ -35,11 +154,14 @@ class UserSerializer(serializers.ModelSerializer):
             'last_name',
             'full_name',
             'role',
+            'user_role_id',
+            'user_role_name',
+            'allowed_pages',
             'is_active',
             'date_joined',
             'last_login'
         ]
-        read_only_fields = ['id', 'username', 'date_joined', 'last_login']
+        read_only_fields = ['id', 'username', 'date_joined', 'last_login', 'role', 'user_role_id', 'user_role_name', 'allowed_pages']
     
     def get_full_name(self, obj):
         """
@@ -52,6 +174,10 @@ class UserSerializer(serializers.ModelSerializer):
             Full name string
         """
         return f"{obj.first_name} {obj.last_name}".strip() or obj.email
+    
+    def get_allowed_pages(self, obj):
+        """Get list of pages this user can access."""
+        return obj.get_allowed_pages()
 
 
 class UserProfileSerializer(serializers.ModelSerializer):
@@ -60,12 +186,21 @@ class UserProfileSerializer(serializers.ModelSerializer):
     
     This serializer includes additional fields that might be useful
     for user profile management.
+    
+    Note on role fields:
+    - 'role': Direct access level (super_admin, admin, user) from AUTH_USER.role column
+    - 'user_role_id': FK to Role table for page-level permissions
+    - 'user_role_name': Name of the Role from Role table (e.g., News_admin)
     """
     
     full_name = serializers.SerializerMethodField()
     initials = serializers.SerializerMethodField()
     azure_object_id = serializers.SerializerMethodField()
     role_display = serializers.SerializerMethodField()
+    role = serializers.CharField(read_only=True)  # Direct column value
+    user_role_id = serializers.IntegerField(source='user_role.id', read_only=True, allow_null=True)
+    user_role_name = serializers.CharField(source='user_role.name', read_only=True, allow_null=True)
+    allowed_pages = serializers.SerializerMethodField()
     
     class Meta:
         model = User
@@ -78,7 +213,10 @@ class UserProfileSerializer(serializers.ModelSerializer):
             'full_name',
             'initials',
             'role',
+            'user_role_id',
+            'user_role_name',
             'role_display',
+            'allowed_pages',
             'is_active',
             'is_staff',
             'date_joined',
@@ -89,7 +227,11 @@ class UserProfileSerializer(serializers.ModelSerializer):
             'azure_object_id', 
             'is_staff', 
             'date_joined', 
-            'last_login'
+            'last_login',
+            'role',
+            'user_role_id',
+            'user_role_name',
+            'allowed_pages'
         ]
     
     def get_full_name(self, obj):
@@ -113,6 +255,10 @@ class UserProfileSerializer(serializers.ModelSerializer):
     def get_role_display(self, obj):
         """Get the human-readable role name."""
         return obj.get_role_display()
+    
+    def get_allowed_pages(self, obj):
+        """Get list of pages this user can access."""
+        return obj.get_allowed_pages()
 
 
 class UserGroupSerializer(serializers.ModelSerializer):
@@ -548,3 +694,160 @@ class ResetUserPasswordSerializer(serializers.Serializer):
             raise serializers.ValidationError("Password reset not allowed for Azure AD users.")
         
         return value
+
+
+# ============================================================================
+# ROLE MANAGEMENT SERIALIZERS (for super_admin assign pages to roles)
+# ============================================================================
+
+class RoleManagementSerializer(serializers.ModelSerializer):
+    """
+    Serializer for full role management (CRUD operations).
+    Includes page permissions and user counts.
+    """
+    
+    page_permissions = PagePermissionSerializer(many=True, read_only=True)
+    pages = serializers.SerializerMethodField()
+    users_count = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = Role
+        fields = [
+            'id',
+            'name',
+            'display_name',
+            'description',
+            'is_system_role',
+            'page_permissions',
+            'pages',
+            'users_count',
+            'created_at',
+            'updated_at'
+        ]
+        read_only_fields = ['id', 'created_at', 'updated_at', 'users_count']
+    
+    def get_pages(self, obj):
+        """Get list of page names this role has access to."""
+        return list(obj.page_permissions.values_list('name', flat=True))
+    
+    def get_users_count(self, obj):
+        """Get count of users with this role."""
+        return obj.users.count()
+
+
+class RoleCreateSerializer(serializers.ModelSerializer):
+    """
+    Serializer for creating a new role.
+    """
+    
+    class Meta:
+        model = Role
+        fields = ['name', 'display_name', 'description', 'is_system_role']
+    
+    def validate_name(self, value):
+        """Validate and sanitize role name."""
+        value = validate_and_sanitize_text_input(value, max_length=50, field_name="Role name")
+        # Ensure lowercase and no spaces (use underscores)
+        value = value.lower().replace(' ', '_').replace('-', '_')
+        if Role.objects.filter(name=value).exists():
+            raise serializers.ValidationError("A role with this name already exists.")
+        return value
+    
+    def validate_display_name(self, value):
+        """Validate and sanitize display name."""
+        if value:
+            return validate_and_sanitize_text_input(value, max_length=100, field_name="Display name")
+        return value
+
+
+class RoleUpdateSerializer(serializers.ModelSerializer):
+    """
+    Serializer for updating an existing role.
+    """
+    
+    class Meta:
+        model = Role
+        fields = ['display_name', 'description']
+    
+    def validate_display_name(self, value):
+        """Validate and sanitize display name."""
+        if value:
+            return validate_and_sanitize_text_input(value, max_length=100, field_name="Display name")
+        return value
+
+
+class AssignPageToRoleSerializer(serializers.Serializer):
+    """
+    Serializer for assigning a page permission to a role.
+    """
+    
+    page_name = serializers.CharField(
+        max_length=100,
+        help_text='Page/feature identifier (e.g., manage-surveys, manage-users)'
+    )
+    display_name = serializers.CharField(
+        max_length=200,
+        required=False,
+        allow_blank=True,
+        help_text='Human-readable display name for the page'
+    )
+    description = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        help_text='Description of the page/feature'
+    )
+    
+    def validate_page_name(self, value):
+        """Validate and sanitize page name."""
+        value = validate_and_sanitize_text_input(value, max_length=100, field_name="Page name")
+        # Normalize to lowercase with hyphens
+        value = value.lower().replace(' ', '-').replace('_', '-')
+        return value
+
+
+class BulkAssignPagesToRoleSerializer(serializers.Serializer):
+    """
+    Serializer for bulk assigning multiple pages to a role.
+    """
+    
+    page_names = serializers.ListField(
+        child=serializers.CharField(max_length=100),
+        min_length=1,
+        help_text='List of page names to assign to the role'
+    )
+    
+    def validate_page_names(self, value):
+        """Validate and normalize page names."""
+        normalized = []
+        for name in value:
+            name = validate_and_sanitize_text_input(name, max_length=100, field_name="Page name")
+            name = name.lower().replace(' ', '-').replace('_', '-')
+            if name not in normalized:
+                normalized.append(name)
+        return normalized
+
+
+class RemovePageFromRoleSerializer(serializers.Serializer):
+    """
+    Serializer for removing a page permission from a role.
+    """
+    
+    page_name = serializers.CharField(
+        max_length=100,
+        help_text='Page/feature identifier to remove'
+    )
+    
+    def validate_page_name(self, value):
+        """Validate page name."""
+        return value.lower().replace(' ', '-').replace('_', '-')
+
+
+class AvailablePagesSerializer(serializers.Serializer):
+    """
+    Serializer for listing all available pages that can be assigned.
+    """
+    
+    name = serializers.CharField()
+    display_name = serializers.CharField()
+    description = serializers.CharField(allow_blank=True)
+    assigned_roles = serializers.ListField(child=serializers.CharField())

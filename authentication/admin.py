@@ -7,10 +7,63 @@ User model without Django's default group and permission system.
 
 from django.contrib import admin
 from django.contrib.auth import get_user_model
-from .models import Group, UserGroup
+from .models import Group, UserGroup, Role, PagePermission
 
 
 User = get_user_model()
+
+
+@admin.register(Role)
+class RoleAdmin(admin.ModelAdmin):
+    """
+    Admin configuration for Role model.
+    """
+    
+    list_display = ['name', 'display_name', 'is_system_role', 'created_at', 'updated_at']
+    list_filter = ['is_system_role', 'created_at']
+    search_fields = ['name', 'display_name', 'description']
+    ordering = ['name']
+    readonly_fields = ['created_at', 'updated_at']
+    
+    fieldsets = (
+        ('Role Information', {
+            'fields': ('name', 'display_name', 'description')
+        }),
+        ('System', {
+            'fields': ('is_system_role',)
+        }),
+        ('Timestamps', {
+            'fields': ('created_at', 'updated_at'),
+            'classes': ('collapse',)
+        }),
+    )
+
+
+@admin.register(PagePermission)
+class PagePermissionAdmin(admin.ModelAdmin):
+    """
+    Admin configuration for PagePermission model.
+    """
+    
+    list_display = ['name', 'display_name', 'role', 'created_at']
+    list_filter = ['role', 'created_at']
+    search_fields = ['name', 'display_name', 'description', 'role__name']
+    ordering = ['name', 'role__name']
+    readonly_fields = ['created_at']
+    autocomplete_fields = ['role']
+    
+    fieldsets = (
+        ('Permission Information', {
+            'fields': ('name', 'display_name', 'description')
+        }),
+        ('Role Assignment', {
+            'fields': ('role',)
+        }),
+        ('Timestamps', {
+            'fields': ('created_at',),
+            'classes': ('collapse',)
+        }),
+    )
 
 
 @admin.register(User)
@@ -28,7 +81,7 @@ class UserAdmin(admin.ModelAdmin):
         'username',
         'first_name',
         'last_name', 
-        'role',
+        'get_role_name',
         'is_active',
         'date_joined',
         'last_login'
@@ -36,7 +89,7 @@ class UserAdmin(admin.ModelAdmin):
     
     # Fields that can be used to filter the user list
     list_filter = [
-        'role',
+        'user_role',
         'is_active',
         'date_joined',
         'last_login'
@@ -53,13 +106,16 @@ class UserAdmin(admin.ModelAdmin):
     # Default ordering
     ordering = ['-date_joined']
     
+    # Autocomplete for role
+    autocomplete_fields = ['user_role']
+    
     # Fields displayed when editing a user
     fieldsets = (
         ('User Information', {
             'fields': ('username', 'email', 'first_name', 'last_name')
         }),
         ('Permissions', {
-            'fields': ('role', 'is_active')
+            'fields': ('user_role', 'is_active')
         }),
         ('Important dates', {
             'fields': ('last_login', 'date_joined'),
@@ -71,12 +127,17 @@ class UserAdmin(admin.ModelAdmin):
     add_fieldsets = (
         ('Create User', {
             'classes': ('wide',),
-            'fields': ('username', 'email', 'first_name', 'last_name', 'role', 'is_active')
+            'fields': ('username', 'email', 'first_name', 'last_name', 'user_role', 'is_active')
         }),
     )
     
     # Read-only fields
     readonly_fields = ['date_joined', 'last_login']
+    
+    @admin.display(description='Role')
+    def get_role_name(self, obj):
+        """Get the role name for display."""
+        return obj.role
     
     def has_delete_permission(self, request, obj=None):
         """

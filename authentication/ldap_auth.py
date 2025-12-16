@@ -36,11 +36,12 @@ class LDAPAuthService:
             logger.error("LDAP configuration missing")
             return None, None
 
-        # Format username for NTLM bind (DOMAIN\username)
-        user_dn = f"{self.domain}\\{username}"
+        # Clean username - remove domain prefix if user included it
+        clean_username = username.split('\\')[-1].split('@')[0].strip()
+        user_dn = f"{self.domain}\\{clean_username}"
         
         try:
-            # Connect and bind
+            # Connect and bind with NTLM (requires DOMAIN\username format)
             server = Server(self.server_url, get_info=ALL)
             conn = Connection(
                 server, 
@@ -49,8 +50,6 @@ class LDAPAuthService:
                 authentication=NTLM, 
                 auto_bind=True
             )
-            
-            logger.info(f"LDAP bind successful for user: {username}")
             
             # Fetch user details
             ldap_user_info = self._get_user_details(conn, username)

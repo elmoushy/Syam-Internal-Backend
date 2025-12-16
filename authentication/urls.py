@@ -40,10 +40,12 @@ urlpatterns = [
     path('stats/', views.UserStatsView.as_view(), name='user-stats'),
     path('logout/', views.logout, name='logout'),
     path('users/', views.AllUsersView.as_view(), name='all-users'),
+    path('users/assignable/', views.AssignableUsersView.as_view(), name='assignable-users'),
     path('users/search/', views.UserSearchView.as_view(), name='user-search'),
     path('users/bulk-delete/', views.BulkDeleteUsersView.as_view(), name='bulk-delete-users'),
     path('users/reset-password/', views.ResetUserPasswordView.as_view(), name='reset-user-password'),
     path('users/<int:user_id>/role/', views.UserRoleUpdateView.as_view(), name='user-role-update'),
+    path('users/<int:user_id>/assign-role/', views.AssignUserRoleView.as_view(), name='user-assign-role'),
     path('users/<int:user_id>/groups/', views.UserGroupsView.as_view(), name='user-groups'),
     
     # Group management
@@ -56,6 +58,13 @@ urlpatterns = [
     
     # Reference data endpoints
     path('roles/', views.RolesListView.as_view(), name='roles-list'),
+    
+    # Role Management (super_admin only - for assigning pages to roles)
+    path('roles/manage/', views.RoleManagementListView.as_view(), name='roles-manage-list'),
+    path('roles/manage/<int:role_id>/', views.RoleManagementDetailView.as_view(), name='roles-manage-detail'),
+    path('roles/manage/<int:role_id>/permissions/', views.RolePermissionsView.as_view(), name='role-permissions'),
+    path('roles/manage/<int:role_id>/permissions/bulk/', views.BulkAssignPermissionsView.as_view(), name='role-permissions-bulk'),
+    path('available-pages/', views.AvailablePagesView.as_view(), name='available-pages'),
     
     # Dashboard
     path('stats/dashboard/', views.DashboardStatsView.as_view(), name='dashboard-stats'),
