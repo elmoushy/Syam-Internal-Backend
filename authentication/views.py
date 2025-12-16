@@ -36,6 +36,7 @@ from weaponpowercloud_backend.security_utils import log_security_event
 from weaponpowercloud_backend.middleware.brute_force_protection import (
     clear_login_attempts, get_remaining_attempts
 )
+from Audit.middleware import AuditMixin
 
 
 User = get_user_model()
@@ -728,12 +729,13 @@ class UserSearchView(APIView):
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
-class UserRoleUpdateView(APIView):
+class UserRoleUpdateView(AuditMixin, APIView):
     """
     API endpoint for updating user roles (super_admin only).
     
     Updates the direct 'role' column (super_admin, admin, user) which controls
     endpoint access level.
+    Uses AuditMixin to properly set the audit user for JWT-authenticated requests.
     """
     
     permission_classes = [IsSuperAdmin]
@@ -773,13 +775,14 @@ class UserRoleUpdateView(APIView):
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
-class AssignUserRoleView(APIView):
+class AssignUserRoleView(AuditMixin, APIView):
     """
     API endpoint for assigning a user_role (from Role table) to a user.
     
     This assigns the user to a Role from the Role table (e.g., News_admin),
     which controls page-level permissions. When assigned, the user's 'role'
     column is automatically updated based on the assigned Role.
+    Uses AuditMixin to properly set the audit user for JWT-authenticated requests.
     
     PUT: Assign a role to user (set user_role FK)
     DELETE: Remove role from user (clear user_role FK, optionally reset role to 'user')
@@ -1831,6 +1834,7 @@ AVAILABLE_PAGES = [
     {'name': 'manage-surveys', 'display_name': 'إدارة الاستطلاعات', 'description': 'Manage surveys (create, edit, delete)'},
     {'name': 'manage-news', 'display_name': 'إدارة الأخبار', 'description': 'Manage news articles (create, edit, delete)'},
     {'name': 'manage-quicklinks', 'display_name': 'إدارة الروابط السريعة', 'description': 'Manage quick links (create, edit, delete)'},
+    {'name': 'manage-audit', 'display_name': 'سجل التدقيق', 'description': 'View audit logs and system activity'},
     # {'name': 'manage-users', 'display_name': 'إدارة المستخدمين', 'description': 'Manage users (create, edit, delete, change roles)'},
     # {'name': 'manage-roles', 'display_name': 'إدارة الأدوار', 'description': 'Manage roles and page permissions'},
     # {'name': 'system-settings', 'display_name': 'إعدادات النظام', 'description': 'System configuration settings'},
@@ -1839,11 +1843,13 @@ AVAILABLE_PAGES = [
 ]
 
 
-class RoleManagementListView(APIView):
+class RoleManagementListView(AuditMixin, APIView):
     """
     API endpoint for listing all roles with their permissions.
     GET: List all roles with page permissions and user counts.
     POST: Create a new role (super_admin only).
+    
+    Uses AuditMixin to properly set the audit user for JWT-authenticated requests.
     """
     
     authentication_classes = [UniversalAuthentication]
@@ -1891,12 +1897,14 @@ class RoleManagementListView(APIView):
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
-class RoleManagementDetailView(APIView):
+class RoleManagementDetailView(AuditMixin, APIView):
     """
     API endpoint for managing a specific role.
     GET: Get role details with permissions.
     PUT/PATCH: Update role (display_name, description).
     DELETE: Delete role (only non-system roles).
+    
+    Uses AuditMixin to properly set the audit user for JWT-authenticated requests.
     """
     
     authentication_classes = [UniversalAuthentication]
@@ -1975,12 +1983,13 @@ class RoleManagementDetailView(APIView):
         }, status=status.HTTP_200_OK)
 
 
-class RolePermissionsView(APIView):
+class RolePermissionsView(AuditMixin, APIView):
     """
     API endpoint for managing page permissions for a role.
     GET: Get all permissions for a role.
     POST: Assign a page permission to a role.
     DELETE: Remove a page permission from a role.
+    Uses AuditMixin to properly set the audit user for JWT-authenticated requests.
     """
     
     authentication_classes = [UniversalAuthentication]

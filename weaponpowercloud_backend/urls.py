@@ -36,6 +36,7 @@ def api_root(request):
             'quicklinks': '/api/quicklinks/',
             'internal_chat': '/api/internal-chat/',
             'admin': '/admin/',
+            'audit': '/api/audit/',
             'api_docs': '/api/' if settings.DEBUG else None,
         },
         'status': 'online'
@@ -66,6 +67,8 @@ urlpatterns = [
 
     # Internal Chat endpoints
     path('api/internal-chat/', include('internal_chat.urls', namespace='internal_chat')),
+
+    path('api/audit/', include('Audit.urls')),
 
     # Add your other app URLs here
     # path('api/weapons/', include('weapons.urls')),

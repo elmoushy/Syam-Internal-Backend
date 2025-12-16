@@ -24,6 +24,7 @@ from .serializers import (
 from .permissions import IsAdminOrReadOnly
 from .pagination import NewsletterPagination
 from .image_utils import process_newsletter_image
+from Audit.middleware import AuditMixin
 
 logger = logging.getLogger(__name__)
 
@@ -40,11 +41,12 @@ class PassthroughRenderer(BaseRenderer):
         return data
 
 
-class BaseNewsletterViewSet(viewsets.ModelViewSet):
+class BaseNewsletterViewSet(AuditMixin, viewsets.ModelViewSet):
     """
     Base ViewSet for newsletters with common functionality.
     
     Subclasses override get_queryset() to filter by news_type.
+    Uses AuditMixin to properly set the audit user for JWT-authenticated requests.
     """
     
     permission_classes = [IsAuthenticated, IsAdminOrReadOnly]

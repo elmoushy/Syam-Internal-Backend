@@ -88,6 +88,7 @@ INSTALLED_APPS = [
     'notifications',  # New app for real-time notifications
     'quicklinks',  # Quick Links for external app shortcuts with BLOB icon storage
     'internal_chat',  # Internal chat system with WebSocket support
+    'Audit.apps.AuditConfig',  # Audit logging system
 ]
 
 # Custom User Model Configuration
@@ -105,7 +106,7 @@ MIDDLEWARE = [
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'authentication.middleware.UniversalAuthMiddleware',  # Ensure JWT compatibility
     'django.contrib.messages.middleware.MessageMiddleware',
-    # Emirates timezone middleware - forces Asia/Dubai timezone for all requests
+    'Audit.middleware.AuditUserMiddleware',
     'weaponpowercloud_backend.middleware.emirates_timezone.EmiratesTimezoneMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]

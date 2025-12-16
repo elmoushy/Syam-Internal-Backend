@@ -65,6 +65,7 @@ from .timezone_utils import (
     is_currently_active_uae, serialize_datetime_uae
 )
 from notifications.services import SurveyNotificationService
+from Audit.middleware import AuditMixin
 
 logger = logging.getLogger(__name__)
 User = get_user_model()
@@ -477,9 +478,11 @@ def uniform_response(success=True, message="", data=None, status_code=200):
     }, status=status_code)
 
 
-class SurveyViewSet(ModelViewSet):
+class SurveyViewSet(AuditMixin, ModelViewSet):
     """
     ViewSet for survey CRUD operations with role-based access.
+    
+    Uses AuditMixin to properly set the audit user for JWT-authenticated requests.
     """
     
     queryset = Survey.objects.filter(deleted_at__isnull=True)
@@ -1136,6 +1139,9 @@ class SurveyViewSet(ModelViewSet):
     
     def destroy(self, request, *args, **kwargs):
         """Delete survey with role-based access control"""
+        from Audit.models import AuditLog
+        from django.contrib.contenttypes.models import ContentType
+        
         try:
             # Check for valid survey ID
             survey_id = kwargs.get('pk')
@@ -1157,8 +1163,25 @@ class SurveyViewSet(ModelViewSet):
                     status_code=status.HTTP_403_FORBIDDEN
                 )
             
+            # Capture survey info before soft delete for audit log
+            survey_title = survey.title[:200]
+            survey_pk = str(survey.pk)
+            
             # Perform soft delete
             survey.soft_delete()
+            
+            # Create audit log for soft delete (since post_delete signal won't fire)
+            actor_name = user.full_name or user.email
+            AuditLog.objects.create(
+                actor=user,
+                actor_name=actor_name,
+                action=AuditLog.SURVEY_DELETE,
+                content_type=ContentType.objects.get_for_model(Survey),
+                object_id=survey_pk,
+                object_name=survey_title,
+                description=f"User '{actor_name}' deleted survey '{survey_title}'",
+                changes={}
+            )
             
             logger.info(f"Survey {survey.id} deleted by {user.email} (role: {user.role})")
             
@@ -8560,10 +8583,11 @@ class PasswordProtectedSurveyResponseView(APIView):
             )
 
 
-class SurveyDraftView(APIView):
+class SurveyDraftView(AuditMixin, APIView):
     """
     Create and manage survey drafts.
     POST /api/surveys/draft/ - Create a new survey draft
+    Uses AuditMixin to properly set the audit user for JWT-authenticated requests.
     """
     
     permission_classes = [IsAuthenticated]
@@ -8594,10 +8618,11 @@ class SurveyDraftView(APIView):
             )
 
 
-class SurveySubmitView(APIView):
+class SurveySubmitView(AuditMixin, APIView):
     """
     Submit survey to make it final and non-editable.
     POST /api/surveys/submit/ - Submit a draft survey
+    Uses AuditMixin to properly set the audit user for JWT-authenticated requests.
     """
     
     permission_classes = [IsAuthenticated]
