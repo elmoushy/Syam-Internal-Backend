@@ -4101,12 +4101,14 @@ class SurveyResponseSubmissionView(APIView):
         if survey.visibility == "PUBLIC":
             # Check if survey uses per-device access
             if survey.per_device_access:
+                # TEMPORARILY DISABLED: Per-device access check
+                # TODO: Re-enable after testing
                 # For per-device access, no email/phone required but check device
-                from .models import DeviceResponse
+                # from .models import DeviceResponse
                 
                 # Check if device has already submitted
-                if DeviceResponse.has_device_submitted(survey, request):
-                    return False, None, "This device has already submitted a response to this survey"
+                # if DeviceResponse.has_device_submitted(survey, request):
+                #     return False, None, "This device has already submitted a response to this survey"
                 
                 # Allow access without email/phone requirement
                 if request.user.is_authenticated:
@@ -4246,10 +4248,11 @@ class SurveyResponseSubmissionView(APIView):
                 respondent_phone=respondent_phone   # Store phone for anonymous responses
             )
             
-            # Create device tracking record if per-device access is enabled
-            if survey.per_device_access:
-                from .models import DeviceResponse
-                DeviceResponse.create_device_tracking(survey, request, survey_response)
+            # TEMPORARILY DISABLED: Device tracking for per-device access
+            # TODO: Re-enable after testing
+            # if survey.per_device_access:
+            #     from .models import DeviceResponse
+            #     DeviceResponse.create_device_tracking(survey, request, survey_response)
             
             # Import answer validator
             from .validators import validate_answer
