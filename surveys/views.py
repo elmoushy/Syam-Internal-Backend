@@ -4324,10 +4324,12 @@ class SurveyResponseSubmissionView(APIView):
             )
             
         except Exception as e:
+            import traceback
             logger.error(f"Error submitting survey response: {e}")
+            logger.error(traceback.format_exc())
             return uniform_response(
                 success=False,
-                message="Failed to submit response",
+                message=f"Failed to submit response: {str(e)}",
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 

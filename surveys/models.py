@@ -746,40 +746,44 @@ class Response(models.Model):
     
     def clean(self):
         """Custom validation to handle uniqueness constraints that Oracle doesn't support."""
-        from django.core.exceptions import ValidationError
+        # TEMPORARILY DISABLED: All duplicate response checks to allow multiple submissions
+        # TODO: Re-enable after testing
+        pass
         
-        # Check for authenticated user duplicate responses
-        if self.respondent:
-            existing = Response.objects.filter(
-                survey=self.survey, 
-                respondent=self.respondent
-            ).exclude(pk=self.pk)
-            if existing.exists():
-                raise ValidationError("You have already submitted a response to this survey.")
+        # from django.core.exceptions import ValidationError
         
-        # For per-device access surveys, device tracking is handled separately
-        # The validation will be done in the views before creating the response
+        # # Check for authenticated user duplicate responses
+        # if self.respondent:
+        #     existing = Response.objects.filter(
+        #         survey=self.survey, 
+        #         respondent=self.respondent
+        #     ).exclude(pk=self.pk)
+        #     if existing.exists():
+        #         raise ValidationError("You have already submitted a response to this survey.")
         
-        # Check for anonymous user duplicate responses (same email or phone based on survey settings)
-        elif not self.survey.per_device_access and (self.respondent_email or self.respondent_phone):
-            # Only check email/phone duplicates if not using per-device access
-            # Determine which contact method to check based on survey settings
-            if self.survey.public_contact_method == 'email' and self.respondent_email:
-                existing = Response.objects.filter(
-                    survey=self.survey,
-                    respondent__isnull=True,
-                    respondent_email=self.respondent_email
-                ).exclude(pk=self.pk)
-                if existing.exists():
-                    raise ValidationError("A response has already been submitted with this email address.")
-            elif self.survey.public_contact_method == 'phone' and self.respondent_phone:
-                existing = Response.objects.filter(
-                    survey=self.survey,
-                    respondent__isnull=True,
-                    respondent_phone=self.respondent_phone
-                ).exclude(pk=self.pk)
-                if existing.exists():
-                    raise ValidationError("A response has already been submitted with this phone number.")
+        # # For per-device access surveys, device tracking is handled separately
+        # # The validation will be done in the views before creating the response
+        
+        # # Check for anonymous user duplicate responses (same email or phone based on survey settings)
+        # elif not self.survey.per_device_access and (self.respondent_email or self.respondent_phone):
+        #     # Only check email/phone duplicates if not using per-device access
+        #     # Determine which contact method to check based on survey settings
+        #     if self.survey.public_contact_method == 'email' and self.respondent_email:
+        #         existing = Response.objects.filter(
+        #             survey=self.survey,
+        #             respondent__isnull=True,
+        #             respondent_email=self.respondent_email
+        #         ).exclude(pk=self.pk)
+        #         if existing.exists():
+        #             raise ValidationError("A response has already been submitted with this email address.")
+        #     elif self.survey.public_contact_method == 'phone' and self.respondent_phone:
+        #         existing = Response.objects.filter(
+        #             survey=self.survey,
+        #             respondent__isnull=True,
+        #             respondent_phone=self.respondent_phone
+        #         ).exclude(pk=self.pk)
+        #         if existing.exists():
+        #             raise ValidationError("A response has already been submitted with this phone number.")
 
     def save(self, *args, **kwargs):
         """Override save to call clean validation."""
