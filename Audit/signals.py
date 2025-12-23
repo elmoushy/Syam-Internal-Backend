@@ -35,10 +35,15 @@ def get_current_user():
 @receiver(pre_save, sender=Survey)
 def capture_survey_old_values(sender, instance, **kwargs):
     """Capture old values before save for change detection."""
+    import logging
+    logger = logging.getLogger(__name__)
+    
     if instance.pk:
         try:
             instance._old = Survey.objects.get(pk=instance.pk)
+            logger.info(f"[AUDIT] Captured old values for survey {instance.pk}: is_active={instance._old.is_active}")
         except Survey.DoesNotExist:
+            logger.warning(f"[AUDIT] Survey {instance.pk} not found in pre_save")
             pass
 
 
@@ -51,7 +56,7 @@ def log_survey_actions(sender, instance, created, **kwargs):
     actor = get_current_user()
     
     if not actor:
-        logger.debug(f"No actor found for survey {instance.pk} audit log")
+        logger.warning(f"[AUDIT] No actor found for survey {instance.pk} (is_active={instance.is_active}, status={instance.status})")
         return  # Skip if no user context
     
     actor_name = actor.full_name or actor.email
@@ -74,9 +79,12 @@ def log_survey_actions(sender, instance, created, **kwargs):
         # Survey updated - check for specific state changes
         old = getattr(instance, '_old', None)
         if not old:
+            logger.warning(f"[AUDIT] No old instance found for survey {instance.pk} update (is_active={instance.is_active})")
             return
         
         changes = {}
+        
+        logger.info(f"[AUDIT] Survey {instance.pk} update detected: old.is_active={old.is_active}, new.is_active={instance.is_active}")
         
         # Check for activation/deactivation
         if old.is_active != instance.is_active:
@@ -236,30 +244,42 @@ def log_newsletter_delete(sender, instance, **kwargs):
 @receiver(pre_save, sender=User)
 def capture_user_old_values(sender, instance, **kwargs):
     """Capture old role values."""
+    import logging
+    logger = logging.getLogger(__name__)
+    
     if instance.pk:
         try:
             instance._old_user = User.objects.get(pk=instance.pk)
+            logger.warning(f"[AUDIT PRE_SAVE] Captured old values for user {instance.pk}: user_role_id={instance._old_user.user_role_id}, role={instance._old_user.role}")
         except User.DoesNotExist:
+            logger.warning(f"[AUDIT PRE_SAVE] User {instance.pk} not found in pre_save")
             pass
 
 
 @receiver(post_save, sender=User)
 def log_role_changes(sender, instance, created, **kwargs):
     """Log role assignments and changes (including QuickLinks admin)."""
+    import logging
+    logger = logging.getLogger(__name__)
     
     if created:
+        logger.info(f"[AUDIT] User {instance.pk} created, skipping audit log")
         return  # Don't log user creation
     
     actor = get_current_user()
     if not actor:
+        logger.warning(f"[AUDIT] No actor found for user {instance.pk} role change (user_role_id={instance.user_role_id}, role={instance.role})")
         return
     
     old = getattr(instance, '_old_user', None)
     if not old:
+        logger.warning(f"[AUDIT] No old user values found for user {instance.pk}")
         return
     
     actor_name = actor.full_name or actor.email
     target_name = instance.full_name or instance.email
+    
+    logger.warning(f"[AUDIT] Checking role changes for user {instance.pk}: old_role={old.role}, new_role={instance.role}, old_user_role_id={old.user_role_id}, new_user_role_id={instance.user_role_id}")
     
     # Check for role column change (super_admin, admin, user)
     if old.role != instance.role:
@@ -279,6 +299,8 @@ def log_role_changes(sender, instance, created, **kwargs):
         old_role_name = old.user_role.display_name if old.user_role else 'None'
         new_role_name = instance.user_role.display_name if instance.user_role else 'None'
         
+        logger.warning(f"[AUDIT] user_role CHANGED for {target_name}: {old_role_name} -> {new_role_name}")
+        
         # Special handling for QuickLinks admin assignment
         role_type = "admin"
         if instance.user_role and 'quicklink' in instance.user_role.name.lower():
@@ -288,7 +310,7 @@ def log_role_changes(sender, instance, created, **kwargs):
         elif instance.user_role and 'survey' in instance.user_role.name.lower():
             role_type = "Survey Admin"
         
-        AuditLog.objects.create(
+        audit_log = AuditLog.objects.create(
             actor=actor,
             actor_name=actor_name,
             action=AuditLog.ROLE_ASSIGN,
@@ -298,6 +320,7 @@ def log_role_changes(sender, instance, created, **kwargs):
             description=f"User '{actor_name}' assigned user '{target_name}' as '{new_role_name}'",
             changes={'user_role': {'old': old_role_name, 'new': new_role_name}}
         )
+        logger.warning(f"[AUDIT] ✓ ROLE_ASSIGN audit log created: {audit_log.description}")
 
 
 @receiver(post_save, sender=PagePermission)
