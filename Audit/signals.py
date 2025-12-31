@@ -14,6 +14,73 @@ from authentication.models import User, PagePermission
 from .models import AuditLog
 import threading
 
+# ============================================================================
+# ARABIC MESSAGE TEMPLATES
+# ============================================================================
+
+# News type translations
+NEWS_TYPE_AR = {
+    'SLIDER': 'خبر رئيسي',
+    'NORMAL': 'خبر عادي',
+    'URGENT': 'خبر عاجل',
+}
+
+# Role translations
+ROLE_AR = {
+    'super_admin': 'مدير عام',
+    'admin': 'مدير',
+    'user': 'مستخدم',
+    'None': 'بدون دور',
+}
+
+# Custom role translations
+CUSTOM_ROLE_AR = {
+    'quicklinks_admin': 'مدير الروابط السريعة',
+    'newsletter_admin': 'مدير الأخبار',
+    'survey_admin': 'مدير الاستبيانات',
+}
+
+# Field name translations
+FIELD_AR = {
+    'title': 'العنوان',
+    'visibility': 'مستوى الظهور',
+    'start_date': 'تاريخ البداية',
+    'end_date': 'تاريخ الانتهاء',
+    'status': 'الحالة',
+    'is_active': 'التفعيل',
+    'role': 'الدور',
+    'user_role': 'الدور المخصص',
+    'news_type': 'نوع الخبر',
+}
+
+
+def get_arabic_news_type(news_type: str) -> str:
+    """Get Arabic translation for news type."""
+    return NEWS_TYPE_AR.get(news_type, news_type)
+
+
+def get_arabic_role(role: str) -> str:
+    """Get Arabic translation for role."""
+    if role is None:
+        return 'بدون دور'
+    return ROLE_AR.get(role, role)
+
+
+def get_arabic_custom_role(role_name: str) -> str:
+    """Get Arabic translation for custom role."""
+    if not role_name or role_name == 'None':
+        return 'بدون دور مخصص'
+    role_key = role_name.lower().replace(' ', '_').replace('-', '_')
+    for key, value in CUSTOM_ROLE_AR.items():
+        if key in role_key:
+            return value
+    return role_name
+
+
+def get_arabic_fields(fields: list) -> str:
+    """Get Arabic translation for field names."""
+    arabic_fields = [FIELD_AR.get(f, f) for f in fields]
+    return '، '.join(arabic_fields)
 # Thread-local storage for current user context
 _thread_locals = threading.local()
 
@@ -71,7 +138,7 @@ def log_survey_actions(sender, instance, created, **kwargs):
             content_type=ContentType.objects.get_for_model(Survey),
             object_id=str(instance.pk),
             object_name=object_name,
-            description=f"User '{actor_name}' created survey '{object_name}'",
+            description=f"قام المستخدم {actor_name} بإنشاء استبيان جديد بعنوان «{object_name}»",
             changes={}
         )
         logger.debug(f"Audit: SURVEY_CREATE for {instance.pk}")
@@ -90,10 +157,10 @@ def log_survey_actions(sender, instance, created, **kwargs):
         if old.is_active != instance.is_active:
             if instance.is_active:
                 action = AuditLog.SURVEY_ACTIVATE
-                description = f"User '{actor_name}' activated survey '{object_name}'"
+                description = f"قام المستخدم {actor_name} بتفعيل استبيان «{object_name}»"
             else:
                 action = AuditLog.SURVEY_DEACTIVATE
-                description = f"User '{actor_name}' deactivated survey '{object_name}'"
+                description = f"قام المستخدم {actor_name} بإلغاء تفعيل استبيان «{object_name}»"
             
             changes['is_active'] = {'old': old.is_active, 'new': instance.is_active}
             
@@ -117,7 +184,7 @@ def log_survey_actions(sender, instance, created, **kwargs):
                 content_type=ContentType.objects.get_for_model(Survey),
                 object_id=str(instance.pk),
                 object_name=object_name,
-                description=f"User '{actor_name}' submitted survey '{object_name}'",
+                description=f"قام المستخدم {actor_name} بنشر استبيان «{object_name}»",
                 changes={'status': {'old': old.status, 'new': instance.status}}
             )
         
@@ -139,7 +206,7 @@ def log_survey_actions(sender, instance, created, **kwargs):
             }
         
         if significant_changes:
-            changed_fields = ', '.join(significant_changes.keys())
+            changed_fields_ar = get_arabic_fields(list(significant_changes.keys()))
             AuditLog.objects.create(
                 actor=actor,
                 actor_name=actor_name,
@@ -147,7 +214,7 @@ def log_survey_actions(sender, instance, created, **kwargs):
                 content_type=ContentType.objects.get_for_model(Survey),
                 object_id=str(instance.pk),
                 object_name=object_name,
-                description=f"User '{actor_name}' updated survey '{object_name}' ({changed_fields})",
+                description=f"قام المستخدم {actor_name} بتحديث استبيان «{object_name}» - الحقول المعدّلة: {changed_fields_ar}",
                 changes=significant_changes
             )
 
@@ -170,7 +237,7 @@ def log_survey_delete(sender, instance, **kwargs):
         content_type=ContentType.objects.get_for_model(Survey),
         object_id=str(instance.pk),
         object_name=object_name,
-        description=f"User '{actor_name}' deleted survey '{object_name}'",
+        description=f"قام المستخدم {actor_name} بحذف استبيان «{object_name}»",
         changes={}
     )
 
@@ -189,6 +256,7 @@ def log_newsletter_actions(sender, instance, created, **kwargs):
     
     actor_name = actor.full_name or actor.email
     object_name = instance.title[:200]
+    news_type_ar = get_arabic_news_type(instance.news_type)
     
     if created:
         AuditLog.objects.create(
@@ -198,7 +266,7 @@ def log_newsletter_actions(sender, instance, created, **kwargs):
             content_type=ContentType.objects.get_for_model(Newsletter),
             object_id=str(instance.pk),
             object_name=object_name,
-            description=f"User '{actor_name}' created {instance.get_news_type_display().lower()} newsletter '{object_name}'",
+            description=f"قام المستخدم {actor_name} بإنشاء {news_type_ar} بعنوان «{object_name}»",
             changes={'news_type': instance.news_type}
         )
     else:
@@ -209,7 +277,7 @@ def log_newsletter_actions(sender, instance, created, **kwargs):
             content_type=ContentType.objects.get_for_model(Newsletter),
             object_id=str(instance.pk),
             object_name=object_name,
-            description=f"User '{actor_name}' updated newsletter '{object_name}'",
+            description=f"قام المستخدم {actor_name} بتحديث خبر «{object_name}»",
             changes={}
         )
 
@@ -232,7 +300,7 @@ def log_newsletter_delete(sender, instance, **kwargs):
         content_type=ContentType.objects.get_for_model(Newsletter),
         object_id=str(instance.pk),
         object_name=object_name,
-        description=f"User '{actor_name}' deleted newsletter '{object_name}'",
+        description=f"قام المستخدم {actor_name} بحذف خبر «{object_name}»",
         changes={}
     )
 
@@ -283,6 +351,8 @@ def log_role_changes(sender, instance, created, **kwargs):
     
     # Check for role column change (super_admin, admin, user)
     if old.role != instance.role:
+        old_role_ar = get_arabic_role(old.role)
+        new_role_ar = get_arabic_role(instance.role)
         AuditLog.objects.create(
             actor=actor,
             actor_name=actor_name,
@@ -290,7 +360,7 @@ def log_role_changes(sender, instance, created, **kwargs):
             content_type=ContentType.objects.get_for_model(User),
             object_id=str(instance.pk),
             object_name=target_name,
-            description=f"User '{actor_name}' changed user '{target_name}' role from '{old.role}' to '{instance.role}'",
+            description=f"قام المستخدم {actor_name} بتغيير دور {target_name} من «{old_role_ar}» إلى «{new_role_ar}»",
             changes={'role': {'old': old.role, 'new': instance.role}}
         )
     
@@ -301,14 +371,19 @@ def log_role_changes(sender, instance, created, **kwargs):
         
         logger.warning(f"[AUDIT] user_role CHANGED for {target_name}: {old_role_name} -> {new_role_name}")
         
-        # Special handling for QuickLinks admin assignment
-        role_type = "admin"
-        if instance.user_role and 'quicklink' in instance.user_role.name.lower():
-            role_type = "QuickLinks Admin"
-        elif instance.user_role and 'newsletter' in instance.user_role.name.lower():
-            role_type = "Newsletter Admin"
-        elif instance.user_role and 'survey' in instance.user_role.name.lower():
-            role_type = "Survey Admin"
+        # Get Arabic role names
+        old_role_ar = get_arabic_custom_role(old_role_name)
+        new_role_ar = get_arabic_custom_role(new_role_name)
+        
+        if new_role_name == 'None':
+            # Role was removed
+            description = f"قام المستخدم {actor_name} بإزالة الدور المخصص «{old_role_ar}» من {target_name}"
+        elif old_role_name == 'None':
+            # New role assigned
+            description = f"قام المستخدم {actor_name} بتعيين {target_name} كـ «{new_role_ar}»"
+        else:
+            # Role changed
+            description = f"قام المستخدم {actor_name} بتغيير دور {target_name} من «{old_role_ar}» إلى «{new_role_ar}»"
         
         audit_log = AuditLog.objects.create(
             actor=actor,
@@ -317,7 +392,7 @@ def log_role_changes(sender, instance, created, **kwargs):
             content_type=ContentType.objects.get_for_model(User),
             object_id=str(instance.pk),
             object_name=target_name,
-            description=f"User '{actor_name}' assigned user '{target_name}' as '{new_role_name}'",
+            description=description,
             changes={'user_role': {'old': old_role_name, 'new': new_role_name}}
         )
         logger.warning(f"[AUDIT] ✓ ROLE_ASSIGN audit log created: {audit_log.description}")
@@ -337,6 +412,7 @@ def log_permission_grant(sender, instance, created, **kwargs):
     actor_name = actor.full_name or actor.email
     role_name = instance.role.display_name
     page_name = instance.display_name or instance.name
+    role_ar = get_arabic_custom_role(role_name)
     
     AuditLog.objects.create(
         actor=actor,
@@ -345,7 +421,7 @@ def log_permission_grant(sender, instance, created, **kwargs):
         content_type=ContentType.objects.get_for_model(PagePermission),
         object_id=str(instance.pk),
         object_name=f"{role_name} → {page_name}",
-        description=f"User '{actor_name}' granted '{role_name}' permission to access '{page_name}'",
+        description=f"قام المستخدم {actor_name} بمنح صلاحية الوصول إلى «{page_name}» لدور «{role_ar}»",
         changes={'role': role_name, 'page': page_name}
     )
 
@@ -361,6 +437,7 @@ def log_permission_revoke(sender, instance, **kwargs):
     actor_name = actor.full_name or actor.email
     role_name = instance.role.display_name
     page_name = instance.display_name or instance.name
+    role_ar = get_arabic_custom_role(role_name)
     
     AuditLog.objects.create(
         actor=actor,
@@ -369,6 +446,6 @@ def log_permission_revoke(sender, instance, **kwargs):
         content_type=ContentType.objects.get_for_model(PagePermission),
         object_id=str(instance.pk),
         object_name=f"{role_name} → {page_name}",
-        description=f"User '{actor_name}' revoked '{role_name}' permission to access '{page_name}'",
+        description=f"قام المستخدم {actor_name} بسحب صلاحية الوصول إلى «{page_name}» من دور «{role_ar}»",
         changes={'role': role_name, 'page': page_name}
     )

@@ -42,23 +42,23 @@ class AuditLog(models.Model):
     
     ACTION_CHOICES = [
         # Survey actions
-        (SURVEY_CREATE, 'Survey Created'),
-        (SURVEY_UPDATE, 'Survey Updated'),
-        (SURVEY_DELETE, 'Survey Deleted'),
-        (SURVEY_ACTIVATE, 'Survey Activated'),
-        (SURVEY_DEACTIVATE, 'Survey Deactivated'),
-        (SURVEY_SUBMIT, 'Survey Submitted'),
+        (SURVEY_CREATE, 'إنشاء استبيان'),
+        (SURVEY_UPDATE, 'تحديث استبيان'),
+        (SURVEY_DELETE, 'حذف استبيان'),
+        (SURVEY_ACTIVATE, 'تفعيل استبيان'),
+        (SURVEY_DEACTIVATE, 'إلغاء تفعيل استبيان'),
+        (SURVEY_SUBMIT, 'نشر استبيان'),
         
         # Newsletter actions
-        (NEWSLETTER_CREATE, 'Newsletter Created'),
-        (NEWSLETTER_UPDATE, 'Newsletter Updated'),
-        (NEWSLETTER_DELETE, 'Newsletter Deleted'),
+        (NEWSLETTER_CREATE, 'إنشاء خبر'),
+        (NEWSLETTER_UPDATE, 'تحديث خبر'),
+        (NEWSLETTER_DELETE, 'حذف خبر'),
         
         # Role/Permission actions
-        (ROLE_ASSIGN, 'Role Assigned'),
-        (ROLE_CHANGE, 'Role Changed'),
-        (PERMISSION_GRANT, 'Permission Granted'),
-        (PERMISSION_REVOKE, 'Permission Revoked'),
+        (ROLE_ASSIGN, 'تعيين دور'),
+        (ROLE_CHANGE, 'تغيير دور'),
+        (PERMISSION_GRANT, 'منح صلاحية'),
+        (PERMISSION_REVOKE, 'سحب صلاحية'),
     ]
     
     # WHO performed the action
