@@ -47,6 +47,8 @@ urlpatterns = [
     path('titles/<int:title_id>/columns/', views.TitleColumnsView.as_view(), name='title-columns'),
     # List/Create user's sheets for a title
     path('titles/<int:title_id>/sheets/', views.UserTitleSheetsView.as_view(), name='title-sheets'),
+    # Get unique values for a column (for filter dropdowns)
+    path('titles/<int:title_id>/column-values/', views.SheetColumnValuesView.as_view(), name='column-values'),
     # Get/Save user's data for a specific sheet
     path('titles/<int:title_id>/my-data/', views.UserTitleDataView.as_view(), name='title-my-data'),
     # Sheet detail (update name/description, delete)

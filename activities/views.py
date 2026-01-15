@@ -837,6 +837,84 @@ class TitleColumnsView(views.APIView):
         })
 
 
+class SheetColumnValuesView(views.APIView):
+    """
+    Get unique values for a specific column in a sheet.
+    Used for populating filter dropdowns with actual data from the entire dataset.
+    """
+    permission_classes = [IsAuthenticated]
+    
+    def get(self, request, title_id):
+        """
+        Query params:
+          - sheet_id (required)
+          - column_key (required) - the column to get values for
+          - limit (optional, default=1000) - max unique values to return
+        """
+        sheet_id = request.query_params.get('sheet_id')
+        column_key = request.query_params.get('column_key')
+        
+        if not sheet_id:
+            return Response(
+                {'error': 'sheet_id مطلوب'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        if not column_key:
+            return Response(
+                {'error': 'column_key مطلوب'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        try:
+            limit = min(1000, max(1, int(request.query_params.get('limit', 1000))))
+        except ValueError:
+            limit = 1000
+        
+        template = get_object_or_404(
+            ActivityTemplate,
+            pk=title_id,
+            status='published',
+            is_deleted=False
+        )
+        
+        sheet = get_object_or_404(
+            ActivitySheet,
+            pk=sheet_id,
+            template=template,
+            owner=request.user,
+            is_active=True
+        )
+        
+        # Extract unique values from the column across all rows
+        unique_values = set()
+        has_blanks = False
+        
+        for row in sheet.rows.all().only('data'):
+            cell_value = row.data.get(column_key, '')
+            if cell_value is None:
+                cell_value = ''
+            cell_value = str(cell_value).strip()
+            
+            if cell_value == '':
+                has_blanks = True
+            else:
+                unique_values.add(cell_value)
+                if len(unique_values) >= limit:
+                    break
+        
+        # Sort values alphabetically (Arabic-aware)
+        sorted_values = sorted(unique_values, key=lambda x: x.lower())
+        
+        return Response({
+            'column_key': column_key,
+            'values': sorted_values,
+            'has_blanks': has_blanks,
+            'total_unique': len(sorted_values),
+            'truncated': len(sorted_values) >= limit,
+        })
+
+
 class UserTitleDataView(views.APIView):
     """
     GET: Get user's data for a specific sheet with pagination
@@ -852,17 +930,23 @@ class UserTitleDataView(views.APIView):
     
     def get(self, request, title_id):
         """
-        Get user's sheet data with pagination. 
+        Get user's sheet data with pagination, filtering, and sorting.
+        
         Query params:
           - sheet_id (required)
           - page (optional, default=1)
           - page_size (optional, default=100, max=500)
+          - sort_by (optional) - column key to sort by
+          - sort_order (optional) - 'asc' or 'desc', default 'asc'
+          - filters (optional) - JSON string of column filters
+              Format: {"col_key": {"excluded": ["value1", "value2"], "show_blanks": true}, ...}
         
         Returns rows with:
           - id: Database primary key (stable identifier)
           - row_order: Current display position (1-indexed)
           - data, styles, height: Cell content
         """
+        import json
         from .constants import USER_ROWS_PER_PAGE
         
         sheet_id = request.query_params.get('sheet_id')
@@ -897,25 +981,81 @@ class UserTitleDataView(views.APIView):
             page = 1
             page_size = USER_ROWS_PER_PAGE
         
-        # Calculate offset
-        offset = (page - 1) * page_size
+        # Sorting params
+        sort_by = request.query_params.get('sort_by', None)
+        sort_order = request.query_params.get('sort_order', 'asc')
         
-        # Get total count (cached on sheet model)
-        total_count = sheet.row_count
-        total_pages = max(1, (total_count + page_size - 1) // page_size)  # Ceiling division
+        # Filters param - parse JSON
+        filters_json = request.query_params.get('filters', None)
+        filters = {}
+        if filters_json:
+            try:
+                filters = json.loads(filters_json)
+            except json.JSONDecodeError:
+                filters = {}
         
-        # Get rows for current page - ORDER BY row_order
-        rows = sheet.rows.all().order_by('row_order')[offset:offset + page_size]
+        # Start with all rows for this sheet
+        queryset = sheet.rows.all()
+        
+        # Apply filters (done in Python since data is JSON field)
+        if filters:
+            filtered_ids = []
+            for row in queryset:
+                include_row = True
+                for col_key, filter_config in filters.items():
+                    excluded_values = filter_config.get('excluded', [])
+                    show_blanks = filter_config.get('show_blanks', True)
+                    
+                    cell_value = row.data.get(col_key, '').strip() if row.data.get(col_key) else ''
+                    is_blank = cell_value == ''
+                    
+                    if is_blank:
+                        if not show_blanks:
+                            include_row = False
+                            break
+                    else:
+                        if cell_value in excluded_values:
+                            include_row = False
+                            break
+                
+                if include_row:
+                    filtered_ids.append(row.id)
+            
+            queryset = sheet.rows.filter(id__in=filtered_ids)
+        
+        # Get total count after filtering
+        total_count = queryset.count()
+        total_pages = max(1, (total_count + page_size - 1) // page_size)
+        
+        # Apply sorting (Python-based for JSON field)
+        if sort_by:
+            rows_list = list(queryset)
+            reverse = (sort_order == 'desc')
+            
+            def sort_key(row):
+                val = row.data.get(sort_by, '') or ''
+                return val.lower() if isinstance(val, str) else str(val)
+            
+            rows_list.sort(key=sort_key, reverse=reverse)
+            
+            # Apply pagination to sorted list
+            offset = (page - 1) * page_size
+            rows_list = rows_list[offset:offset + page_size]
+        else:
+            # Default ordering by row_order with pagination
+            offset = (page - 1) * page_size
+            rows_list = list(queryset.order_by('row_order')[offset:offset + page_size])
+        
         rows_data = [
             {
-                'id': row.id,  # Database PK - STABLE identifier
-                'row_order': row.row_order,  # Display position
-                'row_number': row.row_order,  # Backward compatibility (deprecated)
+                'id': row.id,
+                'row_order': row.row_order,
+                'row_number': row.row_order,
                 'data': row.data,
                 'styles': row.styles,
                 'height': row.height,
             }
-            for row in rows
+            for row in rows_list
         ]
         
         return Response({
@@ -926,7 +1066,6 @@ class UserTitleDataView(views.APIView):
             'title_name': template.name,
             'rows': rows_data,
             'columns': sheet.column_snapshot,
-            # Pagination info
             'pagination': {
                 'page': page,
                 'page_size': page_size,
@@ -934,7 +1073,11 @@ class UserTitleDataView(views.APIView):
                 'total_pages': total_pages,
                 'has_next': page < total_pages,
                 'has_prev': page > 1,
-            }
+            },
+            # Include active filters/sort in response for UI sync
+            'active_filters': filters,
+            'sort_by': sort_by,
+            'sort_order': sort_order,
         })
     
     def post(self, request, title_id):
