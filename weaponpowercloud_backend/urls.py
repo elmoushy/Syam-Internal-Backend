@@ -70,6 +70,9 @@ urlpatterns = [
 
     path('api/audit/', include('Audit.urls')),
 
+    # Activities system (dynamic columns, templates, sheets)
+    path('api/activities/', include('activities.urls', namespace='activities')),
+
     # Add your other app URLs here
     # path('api/weapons/', include('weapons.urls')),
     # path('api/inventory/', include('inventory.urls')),

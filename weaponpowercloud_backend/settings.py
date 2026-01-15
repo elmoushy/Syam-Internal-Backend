@@ -89,6 +89,7 @@ INSTALLED_APPS = [
     'quicklinks',  # Quick Links for external app shortcuts with BLOB icon storage
     'internal_chat',  # Internal chat system with WebSocket support
     'Audit.apps.AuditConfig',  # Audit logging system
+    'activities',  # Dynamic activities/templates system with column management
 ]
 
 # Custom User Model Configuration
