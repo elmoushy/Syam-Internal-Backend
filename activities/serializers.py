@@ -169,11 +169,11 @@ class ActivityTemplateListSerializer(serializers.ModelSerializer):
     class Meta:
         model = ActivityTemplate
         fields = [
-            'id', 'name', 'description', 'status', 'is_deleted',
+            'id', 'name', 'description', 'status', 'is_deleted', 'is_active_title',
             'owner', 'owner_name', 'column_count', 'sheet_count', 'can_delete',
             'created_at', 'updated_at', 'published_at'
         ]
-        read_only_fields = ['id', 'owner', 'status', 'is_deleted', 'created_at', 'updated_at', 'published_at']
+        read_only_fields = ['id', 'owner', 'status', 'is_deleted', 'is_active_title', 'created_at', 'updated_at', 'published_at']
     
     def get_column_count(self, obj):
         return obj.template_columns.count()
@@ -196,7 +196,7 @@ class ActivityTemplateDetailSerializer(serializers.ModelSerializer):
     class Meta:
         model = ActivityTemplate
         fields = [
-            'id', 'name', 'description', 'status', 'is_deleted',
+            'id', 'name', 'description', 'status', 'is_deleted', 'is_active_title',
             'owner', 'owner_name', 'header_image',
             'template_columns', 'can_delete', 'sheet_count',
             'created_at', 'updated_at', 'published_at'
@@ -252,7 +252,7 @@ class ActivityTemplateCreateSerializer(serializers.ModelSerializer):
         """Ensure key is unique by appending suffix if needed."""
         original_key = key
         counter = 1
-        while key in existing_keys:
+        while key in existing_keys or ActivityColumnDefinition.objects.filter(key=key).exists():
             key = f"{original_key}_{counter}"
             counter += 1
         return key
@@ -360,7 +360,7 @@ class TemplateColumnsUpdateSerializer(serializers.Serializer):
         """Ensure key is unique by appending suffix if needed."""
         original_key = key
         counter = 1
-        while key in existing_keys:
+        while key in existing_keys or ActivityColumnDefinition.objects.filter(key=key).exists():
             key = f"{original_key}_{counter}"
             counter += 1
         return key
@@ -438,8 +438,9 @@ class ActivitySheetListSerializer(serializers.ModelSerializer):
     class Meta:
         model = ActivitySheet
         fields = [
-            'id', 'name', 'template', 'template_name',
+            'id', 'name', 'description', 'template', 'template_name',
             'owner', 'owner_name', 'is_active', 'row_count',
+            'is_submitted', 'submitted_at',
             'created_at', 'updated_at'
         ]
         read_only_fields = ['id', 'owner', 'row_count', 'created_at', 'updated_at']
@@ -455,13 +456,15 @@ class ActivitySheetDetailSerializer(serializers.ModelSerializer):
     class Meta:
         model = ActivitySheet
         fields = [
-            'id', 'name', 'template', 'template_name', 'template_status',
+            'id', 'name', 'description', 'template', 'template_name', 'template_status',
             'column_snapshot', 'owner', 'owner_name', 
             'is_active', 'row_count',
+            'is_submitted', 'submitted_at',
             'created_at', 'updated_at'
         ]
         read_only_fields = [
             'id', 'owner', 'column_snapshot', 'row_count', 
+            'is_submitted', 'submitted_at',
             'created_at', 'updated_at'
         ]
 

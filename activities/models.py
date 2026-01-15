@@ -161,6 +161,12 @@ class ActivityTemplate(models.Model):
         help_text="Soft delete flag - archived templates keep this True"
     )
     
+    # Only one template can be active at a time - this is the default for users
+    is_active_title = models.BooleanField(
+        default=False,
+        help_text="If True, this is the active title users will see by default. Only one title can be active."
+    )
+    
     # Header image for Excel export
     header_image = models.ImageField(
         upload_to='activity_templates/headers/',
@@ -277,6 +283,17 @@ class ActivitySheet(models.Model):
     row_count = models.PositiveIntegerField(
         default=0,
         help_text="Cached row count for performance"
+    )
+    
+    # Submission status - once submitted, user cannot edit
+    is_submitted = models.BooleanField(
+        default=False,
+        help_text="If True, sheet has been submitted to admin and cannot be edited."
+    )
+    submitted_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="Timestamp when sheet was submitted"
     )
     
     created_at = models.DateTimeField(auto_now_add=True)

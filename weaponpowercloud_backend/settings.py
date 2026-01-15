@@ -432,16 +432,28 @@ if _redis_password:
 else:
     _channel_redis_host = (_redis_host, _redis_port)
 
-CHANNEL_LAYERS = {
-    'default': {
-        'BACKEND': 'channels_redis.core.RedisChannelLayer',
-        'CONFIG': {
-            "hosts": [_channel_redis_host],
-            "capacity": 1500,
-            "expiry": 10,
+# Use in-memory channel layer for local development (no Redis required)
+# Use Redis for production
+USE_REDIS = os.getenv('USE_REDIS', 'True').lower() == 'true'
+
+if USE_REDIS:
+    CHANNEL_LAYERS = {
+        'default': {
+            'BACKEND': 'channels_redis.core.RedisChannelLayer',
+            'CONFIG': {
+                "hosts": [_channel_redis_host],
+                "capacity": 1500,
+                "expiry": 10,
+            },
         },
-    },
-}
+    }
+else:
+    # In-memory backend for local development (no Redis needed)
+    CHANNEL_LAYERS = {
+        'default': {
+            'BACKEND': 'channels.layers.InMemoryChannelLayer',
+        },
+    }
 
 # WebSocket Configuration
 WEBSOCKET_ACCEPT_ALL = False  # Require authentication

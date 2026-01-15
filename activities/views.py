@@ -10,7 +10,8 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from django.shortcuts import get_object_or_404
 from django.db import transaction
-from django.db.models import Q, F
+from django.db.models import Q, F, Max
+from django.utils import timezone
 
 from .models import (
     ActivityColumnDefinition,
@@ -215,7 +216,7 @@ class TemplateListCreateView(generics.ListCreateAPIView):
     POST: Create a new template
     """
     permission_classes = [IsAuthenticated]
-    pagination_class = TemplateListPagination
+    pagination_class = None  # No pagination - templates are typically few in number
     
     def get_queryset(self):
         user = self.request.user
@@ -787,9 +788,281 @@ class PublishedTitlesListView(views.APIView):
                 'name': template.name,
                 'description': template.description,
                 'column_count': template.template_columns.count(),
+                'is_active_title': template.is_active_title,
             })
         
         return Response(data)
+
+
+class ActiveTitleView(views.APIView):
+    """
+    GET: Get the currently active title (the one users auto-load).
+    Returns the active published title or null if none is set.
+    """
+    permission_classes = [IsAuthenticated]
+    
+    def get(self, request):
+        try:
+            active_title = ActivityTemplate.objects.get(
+                is_active_title=True,
+                status='published',
+                is_deleted=False
+            )
+            
+            return Response({
+                'id': active_title.id,
+                'name': active_title.name,
+                'description': active_title.description,
+                'column_count': active_title.template_columns.count(),
+                'is_active_title': True
+            })
+        except ActivityTemplate.DoesNotExist:
+            return Response({
+                'id': None,
+                'name': None,
+                'description': None,
+                'message': 'لا يوجد عنوان نشط حالياً'
+            })
+
+
+class TitleDetailView(views.APIView):
+    """
+    GET: Get details of a specific title by ID (allows loading non-active templates).
+    Includes deleted/archived templates for read-only viewing of user sheets.
+    """
+    permission_classes = [IsAuthenticated]
+    
+    def get(self, request, title_id):
+        try:
+            # Allow retrieving even deleted templates (for viewing user sheets from deleted templates)
+            title = ActivityTemplate.objects.get(id=title_id)
+            
+            return Response({
+                'id': title.id,
+                'name': title.name,
+                'description': title.description,
+                'column_count': title.template_columns.count(),
+                'is_active_title': title.is_active_title,
+                'status': title.status,
+                'is_deleted': title.is_deleted  # Include deletion status for frontend
+            })
+        except ActivityTemplate.DoesNotExist:
+            return Response(
+                {'error': 'العنوان غير موجود'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+
+class SetActiveTitleView(views.APIView):
+    """
+    POST: Set a title as the active title (admin only).
+    Only one title can be active at a time.
+    """
+    permission_classes = [IsAuthenticated, IsAdminUser]
+    
+    def post(self, request, title_id):
+        template = get_object_or_404(
+            ActivityTemplate,
+            pk=title_id,
+            status='published',
+            is_deleted=False
+        )
+        
+        with transaction.atomic():
+            # Deactivate all other titles
+            ActivityTemplate.objects.filter(is_active_title=True).update(is_active_title=False)
+            
+            # Activate this title
+            template.is_active_title = True
+            template.save(update_fields=['is_active_title', 'updated_at'])
+        
+        return Response({
+            'success': True,
+            'message': f'تم تعيين "{template.name}" كعنوان نشط',
+            'title_id': template.id,
+            'title_name': template.name,
+        })
+
+
+class DeactivateTitleView(views.APIView):
+    """
+    POST: Deactivate a title (admin only).
+    Users will need to select a title manually or wait for new active title.
+    """
+    permission_classes = [IsAuthenticated, IsAdminUser]
+    
+    def post(self, request, title_id):
+        template = get_object_or_404(
+            ActivityTemplate,
+            pk=title_id
+        )
+        
+        if not template.is_active_title:
+            return Response({
+                'error': 'هذا العنوان ليس نشطاً'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        template.is_active_title = False
+        template.save(update_fields=['is_active_title', 'updated_at'])
+        
+        return Response({
+            'success': True,
+            'message': f'تم إلغاء تنشيط "{template.name}"',
+        })
+
+
+class SubmitSheetView(views.APIView):
+    """
+    POST: Submit a sheet to admin. Once submitted, the sheet cannot be edited.
+    """
+    permission_classes = [IsAuthenticated]
+    
+    def post(self, request, sheet_id):
+        sheet = get_object_or_404(
+            ActivitySheet,
+            pk=sheet_id,
+            owner=request.user,
+            is_active=True
+        )
+        
+        if sheet.is_submitted:
+            return Response({
+                'error': 'هذا الجدول تم تقديمه مسبقاً'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Validate sheet has data
+        if sheet.row_count == 0:
+            return Response({
+                'error': 'لا يمكن تقديم جدول فارغ'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        sheet.is_submitted = True
+        sheet.submitted_at = timezone.now()
+        sheet.save(update_fields=['is_submitted', 'submitted_at', 'updated_at'])
+        
+        return Response({
+            'success': True,
+            'message': 'تم تقديم الجدول بنجاح',
+            'sheet_id': sheet.id,
+            'submitted_at': sheet.submitted_at.isoformat(),
+        })
+
+
+class AdminSubmittedSheetsView(views.APIView):
+    """
+    GET: Get all submitted sheets from all users (admin only).
+    Supports filtering by title_id and pagination.
+    """
+    permission_classes = [IsAuthenticated, IsAdminUser]
+    
+    def get(self, request):
+        from .constants import USER_ROWS_PER_PAGE
+        
+        # Filter params
+        title_id = request.query_params.get('title_id')
+        search = request.query_params.get('search', '')
+        
+        # Pagination params
+        try:
+            page = max(1, int(request.query_params.get('page', 1)))
+            page_size = min(100, max(1, int(request.query_params.get('page_size', 20))))
+        except ValueError:
+            page = 1
+            page_size = 20
+        
+        # Build queryset - only submitted sheets
+        queryset = ActivitySheet.objects.filter(
+            is_submitted=True,
+            is_active=True
+        ).select_related('owner', 'template').order_by('-submitted_at')
+        
+        # Filter by title
+        if title_id:
+            queryset = queryset.filter(template_id=title_id)
+        
+        # Search by sheet name or owner username
+        if search:
+            queryset = queryset.filter(
+                Q(name__icontains=search) | 
+                Q(owner__username__icontains=search) |
+                Q(owner__first_name__icontains=search) |
+                Q(owner__last_name__icontains=search)
+            )
+        
+        # Count total
+        total_count = queryset.count()
+        total_pages = (total_count + page_size - 1) // page_size
+        
+        # Paginate
+        start_idx = (page - 1) * page_size
+        end_idx = start_idx + page_size
+        sheets = queryset[start_idx:end_idx]
+        
+        data = []
+        for sheet in sheets:
+            data.append({
+                'id': sheet.id,
+                'name': sheet.name,
+                'description': sheet.description,
+                'template_id': sheet.template_id,
+                'template_name': sheet.template.name if sheet.template else '(محذوف)',
+                'owner_id': sheet.owner_id,
+                'owner_name': sheet.owner.full_name or sheet.owner.username,
+                'owner_username': sheet.owner.username,
+                'row_count': sheet.row_count,
+                'submitted_at': sheet.submitted_at.isoformat() if sheet.submitted_at else None,
+                'created_at': sheet.created_at.isoformat(),
+            })
+        
+        return Response({
+            'sheets': data,
+            'pagination': {
+                'page': page,
+                'page_size': page_size,
+                'total_count': total_count,
+                'total_pages': total_pages,
+                'has_next': page < total_pages,
+                'has_prev': page > 1,
+            }
+        })
+
+
+class UserAllSheetsView(views.APIView):
+    """
+    GET: Get all user's sheets regardless of which title they belong to.
+    This is for showing "recent sheets" even if title is deleted/deactivated.
+    Includes sheets from deleted/archived templates.
+    """
+    permission_classes = [IsAuthenticated]
+    
+    def get(self, request):
+        # Get all user's active sheets (including those with deleted templates)
+        sheets = ActivitySheet.objects.filter(
+            owner=request.user,
+            is_active=True
+        ).select_related('template').order_by('-updated_at')
+        
+        data = []
+        for sheet in sheets:
+            data.append({
+                'id': sheet.id,
+                'name': sheet.name,
+                'description': sheet.description,
+                'template_id': sheet.template_id,
+                'template_name': sheet.template.name if sheet.template else '(عنوان محذوف)',
+                'template_status': sheet.template.status if sheet.template else 'deleted',
+                'template_is_active': sheet.template.is_active_title if sheet.template else False,
+                'row_count': sheet.row_count,
+                'is_submitted': sheet.is_submitted,
+                'submitted_at': sheet.submitted_at.isoformat() if sheet.submitted_at else None,
+                'created_at': sheet.created_at.isoformat(),
+                'updated_at': sheet.updated_at.isoformat(),
+            })
+        
+        return Response({
+            'sheets': data,
+            'count': len(data),
+        })
 
 
 class TitleColumnsView(views.APIView):
@@ -1062,6 +1335,8 @@ class UserTitleDataView(views.APIView):
             'sheet_id': sheet.id,
             'sheet_name': sheet.name,
             'sheet_description': sheet.description,
+            'is_submitted': sheet.is_submitted,
+            'submitted_at': sheet.submitted_at.isoformat() if sheet.submitted_at else None,
             'title_id': template.id,
             'title_name': template.name,
             'rows': rows_data,
@@ -1105,6 +1380,13 @@ class UserTitleDataView(views.APIView):
             owner=request.user,
             is_active=True
         )
+        
+        # Check if sheet is submitted - cannot edit
+        if sheet.is_submitted:
+            return Response(
+                {'error': 'هذا الجدول تم تقديمه ولا يمكن تعديله'},
+                status=status.HTTP_403_FORBIDDEN
+            )
         
         rows_data = request.data.get('rows', [])
         
@@ -1206,6 +1488,13 @@ class UserTitleDataView(views.APIView):
             owner=request.user,
             is_active=True
         )
+        
+        # Check if sheet is submitted - cannot edit
+        if sheet.is_submitted:
+            return Response(
+                {'error': 'هذا الجدول تم تقديمه ولا يمكن تعديله'},
+                status=status.HTTP_403_FORBIDDEN
+            )
         
         # Parse request - support both new and backward-compatible formats
         operations = request.data.get('operations', {})
@@ -1340,7 +1629,7 @@ class UserTitleDataView(views.APIView):
             if appends:
                 # Get the current maximum row_order
                 max_order = sheet.rows.aggregate(
-                    max_order=models.Max('row_order')
+                    max_order=Max('row_order')
                 )['max_order'] or 0
                 
                 rows_to_create = []
@@ -1582,7 +1871,154 @@ class UserSheetDetailView(views.APIView):
             is_active=True
         )
         
+        # Prevent deletion of submitted sheets
+        if sheet.is_submitted:
+            return Response(
+                {'error': 'لا يمكن حذف جدول تم تقديمه'}, 
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
         sheet.is_active = False
         sheet.save(update_fields=['is_active', 'updated_at'])
         
         return Response({'message': 'تم حذف الجدول بنجاح'}, status=status.HTTP_200_OK)
+
+
+class AdminSheetDataView(views.APIView):
+    """
+    GET: Admin endpoint to view any sheet's data (read-only).
+    Supports pagination, sorting, and filtering.
+    """
+    permission_classes = [IsAuthenticated, IsAdminUser]
+    
+    def get(self, request, sheet_id):
+        import json
+        
+        sheet = get_object_or_404(
+            ActivitySheet.objects.select_related('template', 'owner'),
+            pk=sheet_id
+        )
+        
+        # Parse pagination
+        try:
+            page = max(1, int(request.query_params.get('page', 1)))
+            page_size = min(500, max(1, int(request.query_params.get('page_size', 100))))
+        except ValueError:
+            page = 1
+            page_size = 100
+        
+        # Sorting params
+        sort_by = request.query_params.get('sort_by', None)
+        sort_order = request.query_params.get('sort_order', 'asc')
+        
+        # Filters param - parse JSON
+        filters_json = request.query_params.get('filters', None)
+        filters = {}
+        if filters_json:
+            try:
+                filters = json.loads(filters_json)
+            except json.JSONDecodeError:
+                filters = {}
+        
+        # Start with all rows for this sheet
+        queryset = sheet.rows.all()
+        
+        # Apply filters (done in Python since data is JSON field)
+        if filters:
+            filtered_ids = []
+            for row in queryset:
+                include_row = True
+                for col_key, filter_config in filters.items():
+                    excluded_values = filter_config.get('excluded', [])
+                    show_blanks = filter_config.get('show_blanks', True)
+                    
+                    cell_value = row.data.get(col_key, '').strip() if row.data.get(col_key) else ''
+                    is_blank = cell_value == ''
+                    
+                    if is_blank:
+                        if not show_blanks:
+                            include_row = False
+                            break
+                    else:
+                        if cell_value in excluded_values:
+                            include_row = False
+                            break
+                
+                if include_row:
+                    filtered_ids.append(row.id)
+            
+            queryset = sheet.rows.filter(id__in=filtered_ids)
+        
+        # Get total count after filtering
+        total_count = queryset.count()
+        total_pages = max(1, (total_count + page_size - 1) // page_size)
+        
+        # Apply sorting (Python-based for JSON field)
+        if sort_by:
+            rows_list = list(queryset)
+            reverse = (sort_order == 'desc')
+            
+            def sort_key(row):
+                val = row.data.get(sort_by, '') or ''
+                return val.lower() if isinstance(val, str) else str(val)
+            
+            rows_list.sort(key=sort_key, reverse=reverse)
+            
+            # Apply pagination to sorted list
+            offset = (page - 1) * page_size
+            rows_list = rows_list[offset:offset + page_size]
+        else:
+            # Default ordering by row_order with pagination
+            offset = (page - 1) * page_size
+            rows_list = list(queryset.order_by('row_order')[offset:offset + page_size])
+        
+        rows_data = [
+            {
+                'id': row.id,
+                'row_order': row.row_order,
+                'row_number': row.row_order,
+                'data': row.data,
+                'styles': row.styles,
+                'height': row.height,
+            }
+            for row in rows_list
+        ]
+        
+        # Get columns from template or snapshot
+        columns = sheet.column_snapshot or []
+        if not columns and sheet.template:
+            columns = []
+            for tc in sheet.template.template_columns.all().order_by('order'):
+                col_def = tc.column_definition
+                columns.append({
+                    'key': col_def.key,
+                    'label': col_def.label,
+                    'data_type': col_def.data_type,
+                    'width': tc.get_effective_width(),
+                    'min_width': col_def.min_width,
+                    'is_required': tc.is_required,
+                    'options': col_def.options or [],
+                })
+        
+        return Response({
+            'sheet_id': sheet.id,
+            'sheet_name': sheet.name,
+            'sheet_description': sheet.description,
+            'is_submitted': sheet.is_submitted,
+            'submitted_at': sheet.submitted_at.isoformat() if sheet.submitted_at else None,
+            'owner_id': sheet.owner_id,
+            'owner_name': sheet.owner.full_name or sheet.owner.username,
+            'owner_username': sheet.owner.username,
+            'template_id': sheet.template_id,
+            'template_name': sheet.template.name if sheet.template else '(محذوف)',
+            'rows': rows_data,
+            'columns': columns,
+            'pagination': {
+                'page': page,
+                'page_size': page_size,
+                'total_count': total_count,
+                'total_pages': total_pages,
+                'has_next': page < total_pages,
+                'has_prev': page > 1,
+            }
+        })

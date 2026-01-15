@@ -43,6 +43,13 @@ urlpatterns = [
     # ============================================================================
     # List published titles for dropdown
     path('titles/', views.PublishedTitlesListView.as_view(), name='titles-list'),
+    
+    # Active Title Management
+    path('titles/active/', views.ActiveTitleView.as_view(), name='active-title'),
+    path('titles/<int:title_id>/', views.TitleDetailView.as_view(), name='title-detail'),
+    path('titles/<int:title_id>/set-active/', views.SetActiveTitleView.as_view(), name='set-active-title'),
+    path('titles/<int:title_id>/deactivate/', views.DeactivateTitleView.as_view(), name='deactivate-title'),
+    
     # Get columns for a title
     path('titles/<int:title_id>/columns/', views.TitleColumnsView.as_view(), name='title-columns'),
     # List/Create user's sheets for a title
@@ -51,6 +58,15 @@ urlpatterns = [
     path('titles/<int:title_id>/column-values/', views.SheetColumnValuesView.as_view(), name='column-values'),
     # Get/Save user's data for a specific sheet
     path('titles/<int:title_id>/my-data/', views.UserTitleDataView.as_view(), name='title-my-data'),
-    # Sheet detail (update name/description, delete)
+    
+    # User Sheet Management
+    path('my-sheets/', views.UserAllSheetsView.as_view(), name='my-all-sheets'),
     path('my-sheets/<int:sheet_id>/', views.UserSheetDetailView.as_view(), name='my-sheet-detail'),
+    path('my-sheets/<int:sheet_id>/submit/', views.SubmitSheetView.as_view(), name='submit-sheet'),
+    
+    # Admin: View submitted sheets
+    path('admin/submitted-sheets/', views.AdminSubmittedSheetsView.as_view(), name='admin-submitted-sheets'),
+    
+    # Admin: View any sheet's data (read-only)
+    path('admin/sheets/<int:sheet_id>/data/', views.AdminSheetDataView.as_view(), name='admin-sheet-data'),
 ]
