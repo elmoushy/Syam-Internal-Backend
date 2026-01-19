@@ -375,3 +375,150 @@ def create_template_excel(template: ActivityTemplate) -> io.BytesIO:
     
     service = ExcelService(mock_sheet)
     return service.export_to_excel(include_data=False)
+
+
+def detect_columns_from_excel(file_content: bytes) -> list:
+    """
+    Detect column definitions from an Excel file's header row.
+    Returns a list of column definitions that can be used to create a template.
+    
+    Args:
+        file_content: Raw bytes of Excel file
+    
+    Returns:
+        List of dicts with column info: [{name, type, width}, ...]
+    """
+    try:
+        wb = load_workbook(io.BytesIO(file_content), data_only=True)
+    except Exception as e:
+        raise ValueError(f'Invalid Excel file: {str(e)}')
+    
+    ws = wb.active
+    
+    if ws.max_row < 1:
+        raise ValueError('Excel file is empty')
+    
+    # Try to find header row (first row with text data)
+    header_row = 1
+    
+    # Check if row 1 looks like a title (merged cells or single value)
+    # If so, try row 2
+    if ws.max_row >= 2:
+        row1_values = [cell.value for cell in ws[1] if cell.value]
+        row2_values = [cell.value for cell in ws[2] if cell.value]
+        
+        # If row 1 has fewer columns than row 2, row 1 is likely a title
+        if len(row1_values) < len(row2_values) and len(row2_values) >= 2:
+            header_row = 2
+    
+    columns = []
+    for col_idx, cell in enumerate(ws[header_row], start=1):
+        if cell.value:
+            # Clean the header value
+            header = str(cell.value).strip()
+            if not header:
+                continue
+            
+            # Get column width
+            col_letter = get_column_letter(col_idx)
+            width = ws.column_dimensions[col_letter].width
+            if width:
+                width = int(width * 7)  # Convert to pixels
+            else:
+                width = 120  # Default width
+            
+            # Try to infer data type from column values
+            data_type = _infer_column_type(ws, col_idx, header_row + 1)
+            
+            columns.append({
+                'name': header,
+                'type': data_type,
+                'width': width,
+                'excel_column': col_idx
+            })
+    
+    return columns
+
+
+def _infer_column_type(ws, col_idx: int, start_row: int) -> str:
+    """
+    Infer the data type of a column based on sample values.
+    
+    Args:
+        ws: Worksheet object
+        col_idx: Column index (1-based)
+        start_row: Row to start sampling from
+    
+    Returns:
+        Data type string: 'text', 'number', 'date', 'boolean'
+    """
+    import re
+    from datetime import datetime
+    
+    # Sample up to 10 non-empty values
+    samples = []
+    for row_idx in range(start_row, min(start_row + 20, ws.max_row + 1)):
+        cell = ws.cell(row=row_idx, column=col_idx)
+        if cell.value is not None and str(cell.value).strip():
+            samples.append(cell)
+            if len(samples) >= 10:
+                break
+    
+    if not samples:
+        return 'text'  # Default to text if no samples
+    
+    # Check if all values are dates
+    date_count = 0
+    number_count = 0
+    bool_count = 0
+    
+    for cell in samples:
+        value = cell.value
+        
+        # Check for date type
+        if cell.is_date or isinstance(value, datetime):
+            date_count += 1
+            continue
+        
+        # Check for date string
+        if isinstance(value, str):
+            value_str = str(value).strip().lower()
+            
+            # Check for boolean
+            if value_str in ('yes', 'no', 'نعم', 'لا', 'true', 'false', '1', '0'):
+                bool_count += 1
+                continue
+            
+            # Check for date pattern
+            date_patterns = [
+                r'^\d{1,2}/\d{1,2}/\d{2,4}$',  # MM/DD/YYYY
+                r'^\d{4}-\d{2}-\d{2}$',  # YYYY-MM-DD
+                r'^\d{1,2}-\d{1,2}-\d{2,4}$',  # DD-MM-YYYY
+            ]
+            for pattern in date_patterns:
+                if re.match(pattern, value_str):
+                    date_count += 1
+                    break
+            else:
+                # Check if it's a number
+                try:
+                    float(value_str.replace(',', ''))
+                    number_count += 1
+                except ValueError:
+                    pass
+        
+        # Check for numeric type
+        elif isinstance(value, (int, float)):
+            number_count += 1
+    
+    total = len(samples)
+    threshold = 0.7  # 70% of samples must match
+    
+    if date_count / total >= threshold:
+        return 'date'
+    if number_count / total >= threshold:
+        return 'number'
+    if bool_count / total >= threshold:
+        return 'boolean'
+    
+    return 'text'

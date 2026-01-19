@@ -280,6 +280,23 @@ class TemplateDetailView(generics.RetrieveUpdateDestroyAPIView):
             return ActivityTemplateUpdateSerializer
         return ActivityTemplateDetailSerializer
     
+    def update(self, request, *args, **kwargs):
+        """Override update to return DetailSerializer response with columns"""
+        partial = kwargs.pop('partial', False)
+        instance = self.get_object()
+        serializer = self.get_serializer(instance, data=request.data, partial=partial)
+        serializer.is_valid(raise_exception=True)
+        self.perform_update(serializer)
+        
+        if getattr(instance, '_prefetched_objects_cache', None):
+            # If 'prefetch_related' has been applied to a queryset, we need to
+            # forcibly invalidate the prefetch cache on the instance.
+            instance._prefetched_objects_cache = {}
+        
+        # Return response using DetailSerializer to include columns
+        response_serializer = ActivityTemplateDetailSerializer(instance)
+        return Response(response_serializer.data)
+    
     def destroy(self, request, *args, **kwargs):
         instance = self.get_object()
         
@@ -764,6 +781,83 @@ class TemplateDownloadView(views.APIView):
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
+class ExcelColumnDetectionView(views.APIView):
+    """
+    POST: Detect column definitions from an uploaded Excel file.
+    Used by frontend to auto-detect columns when creating templates from Excel.
+    
+    Body (multipart/form-data):
+    - file: Excel file (.xlsx, .xls)
+    
+    Returns list of detected columns with name, type, and width.
+    """
+    permission_classes = [IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser]
+    
+    def post(self, request):
+        from .excel_service import detect_columns_from_excel
+        
+        # Get uploaded file
+        uploaded_file = request.FILES.get('file')
+        if not uploaded_file:
+            return Response(
+                {'error': 'لم يتم تحميل أي ملف', 'error_en': 'No file uploaded'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Validate file extension
+        allowed_extensions = ['.xlsx', '.xls']
+        file_ext = uploaded_file.name.lower()
+        if not any(file_ext.endswith(ext) for ext in allowed_extensions):
+            return Response(
+                {'error': 'نوع الملف غير مدعوم. استخدم ملف Excel (.xlsx أو .xls)',
+                 'error_en': 'Invalid file type. Use Excel file (.xlsx or .xls)'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Check file size (max 5MB for column detection)
+        max_size = 5 * 1024 * 1024  # 5MB
+        if uploaded_file.size > max_size:
+            return Response(
+                {'error': 'حجم الملف كبير جداً. الحد الأقصى 5 ميجابايت',
+                 'error_en': 'File too large. Maximum size is 5MB'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        try:
+            columns = detect_columns_from_excel(uploaded_file.read())
+            
+            if not columns:
+                return Response({
+                    'success': False,
+                    'error': 'لم يتم العثور على أعمدة في الملف',
+                    'error_en': 'No columns found in file',
+                    'columns': []
+                }, status=status.HTTP_400_BAD_REQUEST)
+            
+            return Response({
+                'success': True,
+                'columns': columns,
+                'column_count': len(columns),
+                'message': f'تم اكتشاف {len(columns)} عمود',
+                'message_en': f'Detected {len(columns)} columns'
+            })
+            
+        except ValueError as e:
+            return Response({
+                'success': False,
+                'error': str(e),
+                'columns': []
+            }, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            return Response({
+                'success': False,
+                'error': f'حدث خطأ أثناء قراءة الملف: {str(e)}',
+                'error_en': f'Error reading file: {str(e)}',
+                'columns': []
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
 # ============================================================================
 # USER-FACING SIMPLIFIED API (Title Selection Flow)
 # ============================================================================
@@ -868,13 +962,9 @@ class SetActiveTitleView(views.APIView):
             is_deleted=False
         )
         
-        with transaction.atomic():
-            # Deactivate all other titles
-            ActivityTemplate.objects.filter(is_active_title=True).update(is_active_title=False)
-            
-            # Activate this title
-            template.is_active_title = True
-            template.save(update_fields=['is_active_title', 'updated_at'])
+        # Toggle the active state (multiple templates can be active now)
+        template.is_active_title = True
+        template.save(update_fields=['is_active_title', 'updated_at'])
         
         return Response({
             'success': True,
@@ -1024,6 +1114,337 @@ class AdminSubmittedSheetsView(views.APIView):
                 'has_next': page < total_pages,
                 'has_prev': page > 1,
             }
+        })
+
+
+class AdminTemplateActivitiesView(views.APIView):
+    """
+    GET: Get all submitted activities for a specific template (admin only).
+    Returns individual activity rows (not sheets), grouped by user if needed.
+    Supports filtering by user_id and search in activity data.
+    """
+    permission_classes = [IsAuthenticated, IsAdminUser]
+    
+    def get(self, request, template_id):
+        # Get the template first
+        template = get_object_or_404(
+            ActivityTemplate.objects.prefetch_related(
+                'template_columns__column_definition'
+            ),
+            pk=template_id,
+            is_deleted=False
+        )
+        
+        # Filter params
+        user_id = request.query_params.get('user_id')
+        search = request.query_params.get('search', '')
+        status_filter = request.query_params.get('status', 'submitted')  # Default to 'submitted', or 'draft', 'all'
+        
+        # Pagination params
+        try:
+            page = max(1, int(request.query_params.get('page', 1)))
+            page_size = min(100, max(1, int(request.query_params.get('page_size', 20))))
+        except ValueError:
+            page = 1
+            page_size = 20
+        
+        # Build queryset for activity rows
+        queryset = ActivitySheetRow.objects.filter(
+            sheet__template_id=template_id,
+            sheet__is_active=True
+        ).select_related('sheet__owner', 'sheet__template').order_by('-updated_at')
+        
+        # Filter by submitted status - default is submitted only
+        if status_filter == 'submitted':
+            queryset = queryset.filter(is_submitted=True)
+        elif status_filter == 'draft':
+            queryset = queryset.filter(is_submitted=False)
+        # if status_filter == 'all' or empty string, show all activities
+        
+        # Filter by user
+        if user_id:
+            queryset = queryset.filter(sheet__owner_id=user_id)
+        
+        # Search in row data (JSON field) and owner info
+        if search:
+            queryset = queryset.filter(
+                Q(row_data__icontains=search) | 
+                Q(sheet__owner__username__icontains=search) |
+                Q(sheet__owner__first_name__icontains=search) |
+                Q(sheet__owner__last_name__icontains=search)
+            )
+        
+        # Count total
+        total_count = queryset.count()
+        total_pages = (total_count + page_size - 1) // page_size
+        
+        # Paginate
+        start_idx = (page - 1) * page_size
+        end_idx = start_idx + page_size
+        rows = queryset[start_idx:end_idx]
+        
+        # Build columns list
+        columns = []
+        for tc in template.template_columns.all().order_by('order'):
+            col_def = tc.column_definition
+            columns.append({
+                'id': col_def.id,
+                'key': col_def.key,
+                'label': col_def.label,
+                'data_type': col_def.data_type,
+                'order': tc.order,
+            })
+        
+        # Build activities list
+        activities = []
+        for row in rows:
+            owner = row.sheet.owner
+            row_data = row.data or {}
+            activities.append({
+                'id': row.id,
+                'title': row_data.get('title', row_data.get('عنوان_النشاط', f'نشاط #{row.row_number}')),
+                'description': row_data.get('description', row_data.get('وصف_النشاط', '')),
+                'data': row_data,
+                'styles': row.styles or {},
+                'status': 'submitted' if row.is_submitted else 'draft',
+                'is_submitted': row.is_submitted,
+                'submitted_at': row.submitted_at.isoformat() if row.submitted_at else None,
+                'row_number': row.row_number,
+                'sheet_id': row.sheet_id,
+                'owner_id': owner.id,
+                'author': owner.full_name or owner.username,
+                'owner_username': owner.username,
+                'created_at': row.created_at.isoformat(),
+                'updated_at': row.updated_at.isoformat(),
+            })
+        
+        # Get unique users with submission counts
+        from django.db.models import Count
+        
+        user_stats = ActivitySheetRow.objects.filter(
+            sheet__template_id=template_id,
+            sheet__is_active=True,
+            is_submitted=True  # Only count submitted activities
+        ).values(
+            'sheet__owner_id',
+            'sheet__owner__username',
+            'sheet__owner__first_name',
+            'sheet__owner__last_name'
+        ).annotate(
+            submitted_count=Count('id')
+        ).order_by('-submitted_count')
+        
+        users_list = []
+        for u in user_stats:
+            full_name = f"{u['sheet__owner__first_name'] or ''} {u['sheet__owner__last_name'] or ''}".strip()
+            users_list.append({
+                'id': u['sheet__owner_id'],
+                'username': u['sheet__owner__username'],
+                'full_name': full_name or u['sheet__owner__username'],
+                'submitted_count': u['submitted_count'],
+            })
+        
+        return Response({
+            'template': {
+                'id': template.id,
+                'name': template.name,
+                'description': template.description,
+                'status': template.status,
+            },
+            'columns': columns,
+            'activities': activities,
+            'users': users_list,
+            'pagination': {
+                'page': page,
+                'page_size': page_size,
+                'total_count': total_count,
+                'total_pages': total_pages,
+                'has_next': page < total_pages,
+                'has_prev': page > 1,
+            }
+        })
+
+
+class AdminTemplateActivitiesExportView(views.APIView):
+    """
+    GET: Export activities for a specific template (admin only).
+    Supports batched fetching for large datasets.
+    Returns data without full pagination overhead for efficient export.
+    
+    Query params:
+    - user_id: Filter by specific user
+    - search: Search in row data and owner info
+    - status: 'submitted', 'draft', or 'all' (default: submitted)
+    - page: Page number for batched fetching (default: 1)
+    - page_size: Items per page (default: 100, max: 500)
+    """
+    permission_classes = [IsAuthenticated, IsAdminUser]
+    
+    def get(self, request, template_id):
+        # Get the template first to ensure it exists
+        template = get_object_or_404(
+            ActivityTemplate,
+            pk=template_id,
+            is_deleted=False
+        )
+        
+        # Get query parameters
+        user_id = request.query_params.get('user_id')
+        search = request.query_params.get('search', '').strip()
+        status_filter = request.query_params.get('status', 'submitted')  # Default to submitted
+        
+        # Pagination for batched export (larger page sizes allowed)
+        try:
+            page = max(1, int(request.query_params.get('page', 1)))
+            page_size = min(500, max(1, int(request.query_params.get('page_size', 100))))
+        except ValueError:
+            page = 1
+            page_size = 100
+        
+        # Build queryset for activity rows
+        queryset = ActivitySheetRow.objects.filter(
+            sheet__template_id=template_id,
+            sheet__is_active=True
+        ).select_related('sheet__owner', 'sheet__template').order_by('row_number', '-updated_at')
+        
+        # Filter by submitted status
+        if status_filter == 'submitted':
+            queryset = queryset.filter(is_submitted=True)
+        elif status_filter == 'draft':
+            queryset = queryset.filter(is_submitted=False)
+        
+        # Filter by user
+        if user_id:
+            queryset = queryset.filter(sheet__owner_id=user_id)
+        
+        # Search in row data and owner info
+        if search:
+            queryset = queryset.filter(
+                Q(row_data__icontains=search) | 
+                Q(sheet__owner__username__icontains=search) |
+                Q(sheet__owner__first_name__icontains=search) |
+                Q(sheet__owner__last_name__icontains=search)
+            )
+        
+        # Count total
+        total_count = queryset.count()
+        total_pages = (total_count + page_size - 1) // page_size if total_count > 0 else 1
+        
+        # Paginate
+        start_idx = (page - 1) * page_size
+        end_idx = start_idx + page_size
+        rows = queryset[start_idx:end_idx]
+        
+        # Build columns list
+        columns = []
+        for tc in template.template_columns.all().order_by('order'):
+            col_def = tc.column_definition
+            columns.append({
+                'id': col_def.id,
+                'key': col_def.key,
+                'label': col_def.label,
+                'data_type': col_def.data_type,
+                'order': tc.order,
+            })
+        
+        # Build activities list (simplified for export)
+        activities = []
+        for row in rows:
+            owner = row.sheet.owner
+            row_data = row.data or {}
+            activities.append({
+                'id': row.id,
+                'data': row_data,
+                'styles': row.styles or {},
+                'is_submitted': row.is_submitted,
+                'submitted_at': row.submitted_at.isoformat() if row.submitted_at else None,
+                'row_number': row.row_number,
+                'owner_id': owner.id,
+                'author': owner.full_name or owner.username,
+                'owner_username': owner.username,
+            })
+        
+        return Response({
+            'template': {
+                'id': template.id,
+                'name': template.name,
+            },
+            'columns': columns,
+            'activities': activities,
+            'export_info': {
+                'page': page,
+                'page_size': page_size,
+                'total_count': total_count,
+                'total_pages': total_pages,
+                'has_more': page < total_pages,
+                'fetched_count': len(activities),
+            }
+        })
+
+
+class AdminTemplateUsersView(views.APIView):
+    """
+    GET: Get users with submission counts for a specific template (admin only).
+    Supports filtering by search query on user names.
+    """
+    permission_classes = [IsAuthenticated, IsAdminUser]
+    
+    def get(self, request, template_id):
+        # Get the template first to ensure it exists
+        template = get_object_or_404(
+            ActivityTemplate,
+            pk=template_id,
+            is_deleted=False
+        )
+        
+        # Search filter
+        search = request.query_params.get('search', '').strip()
+        
+        # Get unique users with submission counts
+        from django.db.models import Count
+        
+        user_stats = ActivitySheetRow.objects.filter(
+            sheet__template_id=template_id,
+            sheet__is_active=True,
+            is_submitted=True  # Only count submitted activities
+        ).values(
+            'sheet__owner_id',
+            'sheet__owner__username',
+            'sheet__owner__first_name',
+            'sheet__owner__last_name'
+        ).annotate(
+            submitted_count=Count('id')
+        )
+        
+        # Apply search filter if provided
+        if search:
+            user_stats = user_stats.filter(
+                Q(sheet__owner__username__icontains=search) |
+                Q(sheet__owner__first_name__icontains=search) |
+                Q(sheet__owner__last_name__icontains=search)
+            )
+        
+        user_stats = user_stats.order_by('-submitted_count')
+        
+        users_list = []
+        for u in user_stats:
+            full_name = f"{u['sheet__owner__first_name'] or ''} {u['sheet__owner__last_name'] or ''}".strip()
+            users_list.append({
+                'id': u['sheet__owner_id'],
+                'username': u['sheet__owner__username'],
+                'full_name': full_name or u['sheet__owner__username'],
+                'submitted_count': u['submitted_count'],
+            })
+        
+        return Response({
+            'template': {
+                'id': template.id,
+                'name': template.name,
+                'description': template.description,
+                'status': template.status,
+            },
+            'users': users_list,
+            'total_count': len(users_list),
         })
 
 
@@ -2021,4 +2442,784 @@ class AdminSheetDataView(views.APIView):
                 'has_next': page < total_pages,
                 'has_prev': page > 1,
             }
+        })
+
+
+# ============================================================================
+# USER ACTIVITY PAGE - Simplified endpoint for /activities/local
+# ============================================================================
+
+class UserActivityPageView(views.APIView):
+    """
+    GET: Get everything needed for the user activity page (/activities/local).
+    
+    Returns:
+    - active_templates: All active templates set by admin (if any)
+    
+    This is a simplified endpoint for regular users.
+    """
+    permission_classes = [IsAuthenticated]
+    
+    def get(self, request):
+        # Get all active templates
+        active_templates = ActivityTemplate.objects.filter(
+            is_active_title=True,
+            status='published',
+            is_deleted=False
+        ).order_by('-updated_at')
+        
+        if not active_templates.exists():
+            return Response({
+                'has_active_templates': False,
+                'active_templates': [],
+                'message': 'لا يوجد نموذج نشط حالياً. يرجى الانتظار حتى يقوم المسؤول بتفعيل نموذج.'
+            })
+        
+        # Serialize all active templates
+        templates_data = [
+            {
+                'id': template.id,
+                'name': template.name,
+                'description': template.description,
+                'notes': template.notes,
+                'header_image': template.header_image.url if template.header_image else None,
+                'column_count': template.template_columns.count(),
+                'is_active_title': True,
+            }
+            for template in active_templates
+        ]
+        
+        return Response({
+            'has_active_templates': True,
+            'active_templates': templates_data,
+            'count': len(templates_data)
+        })
+
+
+# ============================================================================
+# USER ACTIVITIES - Per-user activities for a specific template
+# ============================================================================
+
+class UserActivitiesListCreateView(views.APIView):
+    """
+    GET: List user's activities (rows) for a specific template
+    POST: Create a new activity (row) for the user
+    
+    Each user sees only their own activities.
+    Activities are stored as rows in a sheet per user per template.
+    """
+    permission_classes = [IsAuthenticated]
+    
+    def get_or_create_user_sheet(self, template, user):
+        """Get or create a sheet for the user for this template."""
+        sheet, created = ActivitySheet.objects.get_or_create(
+            template=template,
+            owner=user,
+            defaults={
+                'name': f'{template.name} - {user.full_name or user.username}',
+                'description': '',
+                'is_active': True,
+            }
+        )
+        return sheet
+    
+    def get(self, request, template_id):
+        # Validate template exists and is published
+        try:
+            template = ActivityTemplate.objects.get(
+                id=template_id,
+                status='published',
+                is_deleted=False
+            )
+        except ActivityTemplate.DoesNotExist:
+            return Response({
+                'error': 'النموذج غير موجود أو غير منشور'
+            }, status=status.HTTP_404_NOT_FOUND)
+        
+        # Get user's sheet for this template (if exists)
+        try:
+            sheet = ActivitySheet.objects.get(
+                template=template,
+                owner=request.user,
+                is_active=True
+            )
+        except ActivitySheet.DoesNotExist:
+            # No sheet yet - return empty list
+            return Response({
+                'template': {
+                    'id': template.id,
+                    'name': template.name,
+                    'description': template.description,
+                },
+                'activities': [],
+                'columns': self._get_template_columns(template),
+                'pagination': {
+                    'page': 1,
+                    'page_size': 20,
+                    'total_count': 0,
+                    'total_pages': 0,
+                    'has_next': False,
+                    'has_prev': False,
+                }
+            })
+        
+        # Pagination
+        page = int(request.query_params.get('page', 1))
+        page_size = int(request.query_params.get('page_size', 20))
+        
+        # Get rows for user's sheet
+        rows = sheet.rows.all().order_by('-updated_at')
+        total_count = rows.count()
+        total_pages = (total_count + page_size - 1) // page_size if page_size > 0 else 1
+        
+        # Paginate
+        start = (page - 1) * page_size
+        end = start + page_size
+        paginated_rows = rows[start:end]
+        
+        # Get column definitions for title display
+        columns = self._get_template_columns(template)
+        
+        # Build activities list
+        activities = []
+        for row in paginated_rows:
+            # Extract title from first column or specific field
+            first_col_key = columns[0]['key'] if columns else None
+            title = row.data.get(first_col_key, 'نشاط') if first_col_key else 'نشاط'
+            
+            # Build description from all visible columns
+            desc_parts = []
+            for col in columns[1:4]:  # Use next 3 columns for description
+                val = row.data.get(col['key'], '')
+                if val:
+                    desc_parts.append(val)
+            description = ' - '.join(desc_parts) if desc_parts else ''
+            
+            activities.append({
+                'id': row.id,
+                'title': title or 'نشاط جديد',
+                'description': description,
+                'data': row.data,
+                'styles': row.styles,
+                'attachments': self._get_row_attachments(row),
+                'author': request.user.full_name or request.user.username,
+                'date': row.updated_at.isoformat(),
+                'created_at': row.created_at.isoformat(),
+                'updated_at': row.updated_at.isoformat(),
+                'status': 'submitted' if row.is_submitted else 'draft',
+                'is_submitted': row.is_submitted,
+                'submitted_at': row.submitted_at.isoformat() if row.submitted_at else None,
+            })
+        
+        return Response({
+            'template': {
+                'id': template.id,
+                'name': template.name,
+                'description': template.description,
+            },
+            'sheet': {
+                'id': sheet.id,
+                'name': sheet.name,
+                'is_submitted': sheet.is_submitted,
+                'submitted_at': sheet.submitted_at.isoformat() if sheet.submitted_at else None,
+            },
+            'activities': activities,
+            'columns': columns,
+            'pagination': {
+                'page': page,
+                'page_size': page_size,
+                'total_count': total_count,
+                'total_pages': total_pages,
+                'has_next': page < total_pages,
+                'has_prev': page > 1,
+            }
+        })
+    
+    def _get_template_columns(self, template):
+        """Get column definitions for template."""
+        columns = []
+        for tc in template.template_columns.select_related('column_definition').order_by('order'):
+            col_def = tc.column_definition
+            columns.append({
+                'key': col_def.key,
+                'label': col_def.label,
+                'data_type': col_def.data_type,
+                'width': tc.get_effective_width(),
+                'min_width': col_def.min_width,
+                'is_required': tc.is_required,
+                'is_visible': tc.is_visible,
+                'options': col_def.options or [],
+                'allows_attachment': col_def.allows_attachment,
+                'attachment_required': col_def.attachment_required,
+            })
+        return columns
+    
+    def _get_row_attachments(self, row):
+        """Get attachments for a row."""
+        from .models import ActivityRowAttachment
+        attachments = ActivityRowAttachment.objects.filter(row=row)
+        return [
+            {
+                'id': att.id,
+                'column_key': att.column_key,
+                'original_filename': att.original_filename,
+                'file_size': att.file_size,
+                'mime_type': att.mime_type,
+                'is_image': att.is_image,
+                'download_url': att.download_url,
+                'preview_url': att.preview_url,
+                'created_at': att.created_at.isoformat(),
+            }
+            for att in attachments
+        ]
+    
+    def post(self, request, template_id):
+        """Create a new activity (row) for the user."""
+        # Validate template exists and is published
+        try:
+            template = ActivityTemplate.objects.get(
+                id=template_id,
+                status='published',
+                is_deleted=False
+            )
+        except ActivityTemplate.DoesNotExist:
+            return Response({
+                'error': 'النموذج غير موجود أو غير منشور'
+            }, status=status.HTTP_404_NOT_FOUND)
+        
+        # Get or create user's sheet for this template
+        sheet = self.get_or_create_user_sheet(template, request.user)
+        
+        # Check if sheet is submitted
+        if sheet.is_submitted:
+            return Response({
+                'error': 'لا يمكن إضافة أنشطة جديدة بعد تقديم النموذج'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Get data from request
+        data = request.data.get('data', {})
+        styles = request.data.get('styles', {})
+        
+        # Get next row order
+        max_order = sheet.rows.aggregate(Max('row_order'))['row_order__max'] or 0
+        next_order = max_order + 1
+        
+        # Create the row
+        row = ActivitySheetRow.objects.create(
+            sheet=sheet,
+            row_number=next_order,
+            row_order=next_order,
+            data=data,
+            styles=styles,
+            height=32
+        )
+        
+        # Update sheet row count
+        sheet.update_row_count()
+        
+        # Get columns for response
+        columns = self._get_template_columns(template)
+        first_col_key = columns[0]['key'] if columns else None
+        title = data.get(first_col_key, 'نشاط') if first_col_key else 'نشاط'
+        
+        return Response({
+            'id': row.id,
+            'title': title or 'نشاط جديد',
+            'data': row.data,
+            'styles': row.styles,
+            'author': request.user.full_name or request.user.username,
+            'date': row.updated_at.isoformat(),
+            'created_at': row.created_at.isoformat(),
+            'updated_at': row.updated_at.isoformat(),
+            'status': 'draft',
+            'is_submitted': False,
+        }, status=status.HTTP_201_CREATED)
+
+
+class UserActivityDetailView(views.APIView):
+    """
+    GET: Get a single activity (row) by ID
+    PUT/PATCH: Update an activity (if sheet not submitted)
+    DELETE: Delete an activity (if sheet not submitted)
+    
+    User can only access their own activities.
+    """
+    permission_classes = [IsAuthenticated]
+    
+    def get_activity(self, activity_id, user):
+        """Get activity row owned by user."""
+        try:
+            row = ActivitySheetRow.objects.select_related('sheet', 'sheet__template').get(
+                id=activity_id,
+                sheet__owner=user,
+                sheet__is_active=True
+            )
+            return row
+        except ActivitySheetRow.DoesNotExist:
+            return None
+    
+    def get(self, request, activity_id):
+        """Get single activity details."""
+        row = self.get_activity(activity_id, request.user)
+        if not row:
+            return Response({
+                'error': 'النشاط غير موجود'
+            }, status=status.HTTP_404_NOT_FOUND)
+        
+        template = row.sheet.template
+        columns = self._get_template_columns(template) if template else []
+        first_col_key = columns[0]['key'] if columns else None
+        title = row.data.get(first_col_key, 'نشاط') if first_col_key else 'نشاط'
+        
+        return Response({
+            'id': row.id,
+            'title': title or 'نشاط جديد',
+            'data': row.data,
+            'styles': row.styles,
+            'attachments': self._get_row_attachments(row),
+            'author': request.user.full_name or request.user.username,
+            'date': row.updated_at.isoformat(),
+            'created_at': row.created_at.isoformat(),
+            'updated_at': row.updated_at.isoformat(),
+            'status': 'submitted' if row.is_submitted else 'draft',
+            'is_submitted': row.is_submitted,
+            'submitted_at': row.submitted_at.isoformat() if row.submitted_at else None,
+            'sheet': {
+                'id': row.sheet.id,
+                'name': row.sheet.name,
+                'is_submitted': row.sheet.is_submitted,
+            },
+            'template': {
+                'id': template.id,
+                'name': template.name,
+            } if template else None,
+            'columns': columns,
+        })
+    
+    def _get_template_columns(self, template):
+        """Get column definitions for template."""
+        columns = []
+        for tc in template.template_columns.select_related('column_definition').order_by('order'):
+            col_def = tc.column_definition
+            columns.append({
+                'key': col_def.key,
+                'label': col_def.label,
+                'data_type': col_def.data_type,
+                'width': tc.get_effective_width(),
+                'min_width': col_def.min_width,
+                'is_required': tc.is_required,
+                'is_visible': tc.is_visible,
+                'options': col_def.options or [],
+                'allows_attachment': col_def.allows_attachment,
+                'attachment_required': col_def.attachment_required,
+            })
+        return columns
+    
+    def _get_row_attachments(self, row):
+        """Get attachments for a row, grouped by column_key."""
+        from .models import ActivityRowAttachment
+        attachments = ActivityRowAttachment.objects.filter(row=row)
+        result = {}
+        for attachment in attachments:
+            if attachment.column_key not in result:
+                result[attachment.column_key] = []
+            result[attachment.column_key].append({
+                'id': attachment.id,
+                'column_key': attachment.column_key,
+                'original_filename': attachment.original_filename,
+                'file_size': attachment.file_size,
+                'mime_type': attachment.mime_type,
+                'is_image': attachment.is_image,
+                'download_url': attachment.download_url,
+                'preview_url': attachment.preview_url,
+                'created_at': attachment.created_at.isoformat(),
+            })
+        return result
+    
+    def put(self, request, activity_id):
+        """Update activity (full update)."""
+        return self._update_activity(request, activity_id, partial=False)
+    
+    def patch(self, request, activity_id):
+        """Update activity (partial update)."""
+        return self._update_activity(request, activity_id, partial=True)
+    
+    def _update_activity(self, request, activity_id, partial=False):
+        """Update activity row."""
+        row = self.get_activity(activity_id, request.user)
+        if not row:
+            return Response({
+                'error': 'النشاط غير موجود'
+            }, status=status.HTTP_404_NOT_FOUND)
+        
+        # Check if activity is submitted (per-activity check)
+        if row.is_submitted:
+            return Response({
+                'error': 'لا يمكن تعديل النشاط بعد تقديمه'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Update data
+        if 'data' in request.data:
+            if partial:
+                row.data.update(request.data['data'])
+            else:
+                row.data = request.data['data']
+        
+        if 'styles' in request.data:
+            if partial:
+                row.styles.update(request.data['styles'])
+            else:
+                row.styles = request.data['styles']
+        
+        row.save()
+        
+        template = row.sheet.template
+        columns = self._get_template_columns(template) if template else []
+        first_col_key = columns[0]['key'] if columns else None
+        title = row.data.get(first_col_key, 'نشاط') if first_col_key else 'نشاط'
+        
+        return Response({
+            'id': row.id,
+            'title': title or 'نشاط جديد',
+            'data': row.data,
+            'styles': row.styles,
+            'author': request.user.full_name or request.user.username,
+            'date': row.updated_at.isoformat(),
+            'created_at': row.created_at.isoformat(),
+            'updated_at': row.updated_at.isoformat(),
+            'status': 'draft',
+            'is_submitted': False,
+        })
+    
+    def delete(self, request, activity_id):
+        """Delete activity row."""
+        row = self.get_activity(activity_id, request.user)
+        if not row:
+            return Response({
+                'error': 'النشاط غير موجود'
+            }, status=status.HTTP_404_NOT_FOUND)
+        
+        # Check if activity is submitted (per-activity check)
+        if row.is_submitted:
+            return Response({
+                'error': 'لا يمكن حذف النشاط بعد تقديمه'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        sheet = row.sheet
+        row.delete()
+        
+        # Update sheet row count
+        sheet.update_row_count()
+        
+        return Response({
+            'success': True,
+            'message': 'تم حذف النشاط بنجاح'
+        })
+
+
+class UserActivitySubmitView(views.APIView):
+    """
+    POST: Submit a single activity (row) by ID.
+    Once submitted, that activity cannot be edited.
+    Each activity is submitted individually, not the whole sheet.
+    """
+    permission_classes = [IsAuthenticated]
+    
+    def post(self, request, activity_id):
+        """Submit a single activity."""
+        from django.utils import timezone
+        
+        # Get the activity owned by user
+        try:
+            row = ActivitySheetRow.objects.select_related('sheet', 'sheet__template').get(
+                id=activity_id,
+                sheet__owner=request.user,
+                sheet__is_active=True
+            )
+        except ActivitySheetRow.DoesNotExist:
+            return Response({
+                'error': 'النشاط غير موجود'
+            }, status=status.HTTP_404_NOT_FOUND)
+        
+        # Check if already submitted
+        if row.is_submitted:
+            return Response({
+                'error': 'تم تقديم هذا النشاط مسبقاً'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Submit the activity
+        row.is_submitted = True
+        row.submitted_at = timezone.now()
+        row.save()
+        
+        return Response({
+            'success': True,
+            'message': 'تم تقديم النشاط بنجاح',
+            'activity_id': row.id,
+            'submitted_at': row.submitted_at.isoformat()
+        })
+
+
+class UserTemplateSubmitView(views.APIView):
+    """
+    DEPRECATED: Use UserActivitySubmitView instead for per-activity submission.
+    This view now submits ALL unsubmitted activities for a template at once.
+    """
+    permission_classes = [IsAuthenticated]
+    
+    def post(self, request, template_id):
+        """Submit all unsubmitted activities for a template."""
+        from django.utils import timezone
+        
+        # Validate template exists and is published
+        try:
+            template = ActivityTemplate.objects.get(
+                id=template_id,
+                status='published',
+                is_deleted=False
+            )
+        except ActivityTemplate.DoesNotExist:
+            return Response({
+                'error': 'النموذج غير موجود أو غير منشور'
+            }, status=status.HTTP_404_NOT_FOUND)
+        
+        # Get user's sheet for this template
+        try:
+            sheet = ActivitySheet.objects.get(
+                template=template,
+                owner=request.user,
+                is_active=True
+            )
+        except ActivitySheet.DoesNotExist:
+            return Response({
+                'error': 'لا يوجد نموذج للتقديم'
+            }, status=status.HTTP_404_NOT_FOUND)
+        
+        # Get unsubmitted activities
+        unsubmitted = sheet.rows.filter(is_submitted=False)
+        count = unsubmitted.count()
+        
+        if count == 0:
+            return Response({
+                'error': 'لا توجد أنشطة غير مقدمة'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Submit all unsubmitted activities
+        now = timezone.now()
+        unsubmitted.update(is_submitted=True, submitted_at=now)
+        
+        return Response({
+            'success': True,
+            'message': f'تم تقديم {count} نشاط بنجاح',
+            'submitted_count': count,
+            'submitted_at': now.isoformat()
+        })
+
+
+# ============================================================================
+# Attachment Views
+# ============================================================================
+
+class RowAttachmentListCreateView(views.APIView):
+    """
+    GET: List all attachments for a row
+    POST: Upload a new attachment for a row
+    """
+    permission_classes = [IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser]
+    
+    def get(self, request, row_id):
+        """List all attachments for a row."""
+        from .models import ActivityRowAttachment
+        from .serializers import ActivityRowAttachmentSerializer
+        
+        row = get_object_or_404(ActivitySheetRow, id=row_id)
+        
+        # Check permissions - owner or admin
+        if row.sheet.owner != request.user and not request.user.is_staff:
+            return Response(
+                {'error': 'ليس لديك صلاحية لعرض المرفقات'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        attachments = ActivityRowAttachment.objects.filter(row=row)
+        
+        # Optional: filter by column_key
+        column_key = request.query_params.get('column_key')
+        if column_key:
+            attachments = attachments.filter(column_key=column_key)
+        
+        serializer = ActivityRowAttachmentSerializer(attachments, many=True)
+        return Response(serializer.data)
+    
+    def post(self, request, row_id):
+        """Upload a new attachment."""
+        from .models import ActivityRowAttachment
+        from .serializers import ActivityRowAttachmentCreateSerializer, ActivityRowAttachmentSerializer
+        
+        row = get_object_or_404(ActivitySheetRow, id=row_id)
+        
+        # Check permissions - owner or admin
+        if row.sheet.owner != request.user and not request.user.is_staff:
+            return Response(
+                {'error': 'ليس لديك صلاحية لرفع مرفقات'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        # Check if row is already submitted
+        if row.is_submitted:
+            return Response(
+                {'error': 'لا يمكن إضافة مرفقات لنشاط مقدم'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Validate column allows attachments
+        column_key = request.data.get('column_key')
+        if column_key:
+            template = row.sheet.template
+            template_column = template.template_columns.filter(
+                column_definition__key=column_key
+            ).select_related('column_definition').first()
+            if template_column and template_column.column_definition:
+                if not template_column.column_definition.allows_attachment:
+                    return Response(
+                        {'error': 'هذا العمود لا يسمح بالمرفقات'},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+        
+        # Prepare data
+        data = {
+            'row_id': row_id,
+            'column_key': column_key,
+            'file': request.FILES.get('file')
+        }
+        
+        serializer = ActivityRowAttachmentCreateSerializer(data=data)
+        if serializer.is_valid():
+            attachment = serializer.save()
+            return Response(
+                ActivityRowAttachmentSerializer(attachment).data,
+                status=status.HTTP_201_CREATED
+            )
+        
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+class AttachmentDetailView(views.APIView):
+    """
+    GET: Get attachment metadata
+    DELETE: Delete an attachment
+    """
+    permission_classes = [IsAuthenticated]
+    
+    def get(self, request, attachment_id):
+        """Get attachment metadata (without file content)."""
+        from .models import ActivityRowAttachment
+        from .serializers import ActivityRowAttachmentSerializer
+        
+        attachment = get_object_or_404(ActivityRowAttachment, id=attachment_id)
+        
+        # Check permissions
+        if attachment.row.sheet.owner != request.user and not request.user.is_staff:
+            return Response(
+                {'error': 'ليس لديك صلاحية لعرض هذا المرفق'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        serializer = ActivityRowAttachmentSerializer(attachment)
+        return Response(serializer.data)
+    
+    def delete(self, request, attachment_id):
+        """Delete an attachment."""
+        from .models import ActivityRowAttachment
+        
+        attachment = get_object_or_404(ActivityRowAttachment, id=attachment_id)
+        
+        # Check permissions - owner or admin
+        if attachment.row.sheet.owner != request.user and not request.user.is_staff:
+            return Response(
+                {'error': 'ليس لديك صلاحية لحذف هذا المرفق'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        # Check if row is already submitted
+        if attachment.row.is_submitted:
+            return Response(
+                {'error': 'لا يمكن حذف مرفقات نشاط مقدم'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        attachment.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class AttachmentDownloadView(views.APIView):
+    """
+    GET: Download attachment as base64 (for non-images or explicit download)
+    """
+    permission_classes = [IsAuthenticated]
+    
+    def get(self, request, attachment_id):
+        """Download attachment as base64."""
+        import base64
+        from .models import ActivityRowAttachment
+        
+        attachment = get_object_or_404(ActivityRowAttachment, id=attachment_id)
+        
+        # Check permissions
+        if attachment.row.sheet.owner != request.user and not request.user.is_staff:
+            return Response(
+                {'error': 'ليس لديك صلاحية لتحميل هذا المرفق'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        # Convert to base64
+        file_base64 = base64.b64encode(attachment.file_content).decode('utf-8')
+        
+        return Response({
+            'id': attachment.id,
+            'filename': attachment.original_filename,
+            'mime_type': attachment.mime_type,
+            'file_size': attachment.file_size,
+            'is_image': attachment.is_image,
+            'content': file_base64
+        })
+
+
+class AttachmentPreviewView(views.APIView):
+    """
+    GET: Preview image attachment (returns base64 for images only)
+    """
+    permission_classes = [IsAuthenticated]
+    
+    def get(self, request, attachment_id):
+        """Preview image attachment."""
+        import base64
+        from .models import ActivityRowAttachment
+        
+        attachment = get_object_or_404(ActivityRowAttachment, id=attachment_id)
+        
+        # Check permissions
+        if attachment.row.sheet.owner != request.user and not request.user.is_staff:
+            return Response(
+                {'error': 'ليس لديك صلاحية لعرض هذا المرفق'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        # Only allow preview for images
+        if not attachment.is_image:
+            return Response(
+                {'error': 'المعاينة متاحة للصور فقط'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Convert to base64
+        file_base64 = base64.b64encode(attachment.file_content).decode('utf-8')
+        
+        return Response({
+            'id': attachment.id,
+            'filename': attachment.original_filename,
+            'mime_type': attachment.mime_type,
+            'is_image': True,
+            'content': file_base64
         })

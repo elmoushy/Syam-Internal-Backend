@@ -37,10 +37,14 @@ urlpatterns = [
     path('sheets/<int:sheet_id>/export/', views.SheetExportView.as_view(), name='sheet-export'),
     path('sheets/<int:sheet_id>/import/', views.SheetImportView.as_view(), name='sheet-import'),
     path('templates/<int:template_id>/download/', views.TemplateDownloadView.as_view(), name='template-download'),
+    path('columns/detect-from-excel/', views.ExcelColumnDetectionView.as_view(), name='detect-columns-from-excel'),
     
     # ============================================================================
     # USER-FACING SIMPLIFIED API (Title Selection Flow)
     # ============================================================================
+    # **NEW** - Unified endpoint for /activities/local page
+    path('user/activity-page/', views.UserActivityPageView.as_view(), name='user-activity-page'),
+    
     # List published titles for dropdown
     path('titles/', views.PublishedTitlesListView.as_view(), name='titles-list'),
     
@@ -69,4 +73,37 @@ urlpatterns = [
     
     # Admin: View any sheet's data (read-only)
     path('admin/sheets/<int:sheet_id>/data/', views.AdminSheetDataView.as_view(), name='admin-sheet-data'),
+    
+    # Admin: View all submitted activities for a specific template
+    path('admin/templates/<int:template_id>/activities/', views.AdminTemplateActivitiesView.as_view(), name='admin-template-activities'),
+    
+    # Admin: Export activities for a template (supports batched fetching for large datasets)
+    path('admin/templates/<int:template_id>/activities/export/', views.AdminTemplateActivitiesExportView.as_view(), name='admin-template-activities-export'),
+    
+    # Admin: Get users with submission counts for a template
+    path('admin/templates/<int:template_id>/users/', views.AdminTemplateUsersView.as_view(), name='admin-template-users'),
+    
+    # ============================================================================
+    # USER ACTIVITIES API - Per-user activities CRUD for a specific template
+    # ============================================================================
+    # List/Create activities for a template
+    path('user/templates/<int:template_id>/activities/', views.UserActivitiesListCreateView.as_view(), name='user-activities-list'),
+    # Submit all unsubmitted activities for a template (bulk submit)
+    path('user/templates/<int:template_id>/submit/', views.UserTemplateSubmitView.as_view(), name='user-template-submit'),
+    # Get/Update/Delete single activity
+    path('user/activities/<int:activity_id>/', views.UserActivityDetailView.as_view(), name='user-activity-detail'),
+    # Submit a single activity
+    path('user/activities/<int:activity_id>/submit/', views.UserActivitySubmitView.as_view(), name='user-activity-submit'),
+    
+    # ============================================================================
+    # ATTACHMENTS API
+    # ============================================================================
+    # List/Create attachments for a row
+    path('rows/<int:row_id>/attachments/', views.RowAttachmentListCreateView.as_view(), name='row-attachments'),
+    # Get/Delete single attachment
+    path('attachments/<int:attachment_id>/', views.AttachmentDetailView.as_view(), name='attachment-detail'),
+    # Download attachment (returns base64)
+    path('attachments/<int:attachment_id>/download/', views.AttachmentDownloadView.as_view(), name='attachment-download'),
+    # Preview image attachment (returns base64 for images only)
+    path('attachments/<int:attachment_id>/preview/', views.AttachmentPreviewView.as_view(), name='attachment-preview'),
 ]

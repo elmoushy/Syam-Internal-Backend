@@ -13,6 +13,7 @@ from .models import (
     ActivityTemplateColumn,
     ActivitySheet,
     ActivitySheetRow,
+    ActivityRowAttachment,
 )
 from .constants import MAX_ROWS_PER_REQUEST
 
@@ -52,7 +53,8 @@ class ActivityColumnDefinitionSerializer(serializers.ModelSerializer):
         model = ActivityColumnDefinition
         fields = [
             'id', 'key', 'label', 'data_type', 'default_width', 'min_width',
-            'order', 'is_system', 'is_active', 'options', 
+            'order', 'is_system', 'is_active', 'options',
+            'allows_attachment', 'attachment_required',
             'validations', 'can_delete', 'usage_count',
             'created_at', 'updated_at'
         ]
@@ -72,7 +74,7 @@ class ActivityColumnDefinitionCreateSerializer(serializers.ModelSerializer):
         model = ActivityColumnDefinition
         fields = [
             'key', 'label', 'data_type', 'default_width', 'min_width',
-            'order', 'options'
+            'order', 'options', 'allows_attachment', 'attachment_required'
         ]
     
     def validate_key(self, value):
@@ -102,7 +104,7 @@ class ActivityColumnDefinitionUpdateSerializer(serializers.ModelSerializer):
         model = ActivityColumnDefinition
         fields = [
             'label', 'data_type', 'default_width', 'min_width',
-            'order', 'is_active', 'options'
+            'order', 'is_active', 'options', 'allows_attachment', 'attachment_required'
         ]
     
     def validate(self, data):
@@ -190,18 +192,36 @@ class ActivityTemplateDetailSerializer(serializers.ModelSerializer):
     
     owner_name = serializers.CharField(source='owner.username', read_only=True)
     template_columns = ActivityTemplateColumnSerializer(many=True, read_only=True)
+    columns = serializers.SerializerMethodField()  # Simplified columns format for frontend
     can_delete = serializers.SerializerMethodField()
     sheet_count = serializers.SerializerMethodField()
     
     class Meta:
         model = ActivityTemplate
         fields = [
-            'id', 'name', 'description', 'status', 'is_deleted', 'is_active_title',
+            'id', 'name', 'description', 'notes', 'status', 'is_deleted', 'is_active_title',
             'owner', 'owner_name', 'header_image',
-            'template_columns', 'can_delete', 'sheet_count',
+            'template_columns', 'columns', 'can_delete', 'sheet_count',
             'created_at', 'updated_at', 'published_at'
         ]
         read_only_fields = ['id', 'owner', 'status', 'is_deleted', 'created_at', 'updated_at', 'published_at']
+    
+    def get_columns(self, obj):
+        """Return simplified column format for frontend"""
+        return [
+            {
+                'id': tc.column_definition.id,
+                'name': tc.column_definition.label,
+                'data_type': tc.column_definition.data_type,
+                'options': tc.column_definition.options or [],
+                'order': tc.order,
+                'is_required': tc.is_required,
+                'is_visible': tc.is_visible,
+                'allows_attachment': tc.column_definition.allows_attachment,
+                'attachment_required': tc.column_definition.attachment_required
+            }
+            for tc in obj.template_columns.select_related('column_definition').order_by('order')
+        ]
     
     def get_can_delete(self, obj):
         return obj.can_delete()
@@ -225,7 +245,7 @@ class ActivityTemplateCreateSerializer(serializers.ModelSerializer):
     
     class Meta:
         model = ActivityTemplate
-        fields = ['name', 'description', 'header_image', 'columns']
+        fields = ['name', 'description', 'notes', 'header_image', 'columns']
     
     def _generate_key(self, label):
         """Generate a unique key from Arabic/English label."""
@@ -284,7 +304,9 @@ class ActivityTemplateCreateSerializer(serializers.ModelSerializer):
                 min_width=80,       # Fixed min width
                 order=idx,
                 is_system=False,
-                is_active=True
+                is_active=True,
+                allows_attachment=col_data.get('allows_attachment', False),
+                attachment_required=col_data.get('attachment_required', False)
             )
             
             # Link to template
@@ -302,18 +324,160 @@ class ActivityTemplateCreateSerializer(serializers.ModelSerializer):
 class ActivityTemplateUpdateSerializer(serializers.ModelSerializer):
     """Serializer for updating templates"""
     
+    # Support inline column updates (only for draft templates)
+    columns = serializers.ListField(
+        child=serializers.DictField(),
+        required=False,
+        write_only=True
+    )
+    notes = serializers.CharField(required=False, allow_blank=True)
+    
     class Meta:
         model = ActivityTemplate
-        fields = ['name', 'description', 'header_image']
+        fields = ['name', 'description', 'notes', 'header_image', 'status', 'is_active_title', 'columns']
+    
+    def validate_status(self, value):
+        """Validate status transitions"""
+        if self.instance:
+            current_status = self.instance.status
+            # Define allowed transitions
+            allowed_transitions = {
+                'draft': ['published', 'archived'],
+                'published': ['archived'],
+                'archived': ['draft'],  # Allow reactivating archived templates
+            }
+            if value != current_status and value not in allowed_transitions.get(current_status, []):
+                raise serializers.ValidationError(
+                    f"Cannot transition from '{current_status}' to '{value}'"
+                )
+        return value
+    
+    def validate_is_active_title(self, value):
+        """Validate is_active_title - only published templates can be active"""
+        if value and self.instance:
+            # Check if we're also setting status to published in the same request
+            new_status = self.initial_data.get('status', self.instance.status)
+            if new_status != 'published':
+                raise serializers.ValidationError(
+                    "Only published templates can be set as active title"
+                )
+        return value
     
     def validate(self, data):
         if self.instance and self.instance.status != 'draft':
-            # Published/archived templates can only update name and description
+            # Published/archived templates can only update name, description, notes, status, and is_active_title
             if 'header_image' in data:
                 raise serializers.ValidationError(
                     "Cannot modify header image on published/archived templates"
                 )
+            if 'columns' in data:
+                raise serializers.ValidationError(
+                    "Cannot modify columns on published/archived templates"
+                )
         return data
+    
+    def _generate_key(self, label):
+        """Generate a unique key from Arabic/English label."""
+        import re
+        import unicodedata
+        from hashlib import md5
+        
+        # Normalize and transliterate
+        normalized = unicodedata.normalize('NFKD', label)
+        # Remove non-ASCII characters and convert to lowercase
+        ascii_label = normalized.encode('ascii', 'ignore').decode('ascii').lower()
+        
+        if ascii_label:
+            # Use ASCII version if available
+            key = re.sub(r'[^a-z0-9]', '_', ascii_label)
+            key = re.sub(r'_+', '_', key).strip('_')
+        else:
+            # For pure Arabic, use hash
+            key = 'col_' + md5(label.encode('utf-8')).hexdigest()[:8]
+        
+        return key or 'column'
+    
+    def _ensure_unique_key(self, key, existing_keys):
+        """Ensure key is unique by appending suffix if needed."""
+        original_key = key
+        counter = 1
+        while key in existing_keys or ActivityColumnDefinition.objects.filter(key=key).exists():
+            key = f"{original_key}_{counter}"
+            counter += 1
+        return key
+    
+    def update(self, instance, validated_data):
+        """Handle status change, is_active_title exclusivity, and column updates"""
+        from django.utils import timezone
+        
+        columns_data = validated_data.pop('columns', None)
+        
+        new_status = validated_data.get('status')
+        if new_status == 'published' and instance.status == 'draft':
+            validated_data['published_at'] = timezone.now()
+        
+        # Update basic fields (multiple templates can be active now)
+        instance = super().update(instance, validated_data)
+        
+        # Handle column updates (only for draft templates)
+        if columns_data is not None and instance.status == 'draft':
+            with transaction.atomic():
+                # Get existing column definition IDs to clean up later
+                old_column_def_ids = list(
+                    instance.template_columns.values_list('column_definition_id', flat=True)
+                )
+                
+                # Remove existing template columns
+                instance.template_columns.all().delete()
+                
+                # Delete old column definitions that were created for this template
+                # Only delete non-system columns that are no longer used
+                for col_id in old_column_def_ids:
+                    col_def = ActivityColumnDefinition.objects.filter(
+                        id=col_id, 
+                        is_system=False
+                    ).first()
+                    if col_def and not col_def.template_usages.exists():
+                        col_def.delete()
+                
+                existing_keys = set()
+                
+                # Create new columns
+                for idx, col_data in enumerate(columns_data):
+                    label = col_data.get('label', f'Column {idx + 1}')
+                    data_type = col_data.get('data_type', 'text')
+                    options = col_data.get('options', [])
+                    
+                    # Auto-generate key from label
+                    key = self._generate_key(label)
+                    key = self._ensure_unique_key(key, existing_keys)
+                    existing_keys.add(key)
+                    
+                    # Create column definition
+                    column_def = ActivityColumnDefinition.objects.create(
+                        key=key,
+                        label=label,
+                        data_type=data_type,
+                        options=options if data_type == 'select' else [],
+                        default_width=120,
+                        min_width=80,
+                        order=idx,
+                        is_system=False,
+                        is_active=True,
+                        allows_attachment=col_data.get('allows_attachment', False),
+                        attachment_required=col_data.get('attachment_required', False)
+                    )
+                    
+                    # Link to template
+                    ActivityTemplateColumn.objects.create(
+                        template=instance,
+                        column_definition=column_def,
+                        order=idx,
+                        is_required=col_data.get('is_required', False),
+                        is_visible=True
+                    )
+        
+        return instance
 
 
 class TemplateColumnsUpdateSerializer(serializers.Serializer):
@@ -410,7 +574,9 @@ class TemplateColumnsUpdateSerializer(serializers.Serializer):
                     min_width=80,
                     order=idx,
                     is_system=False,
-                    is_active=True
+                    is_active=True,
+                    allows_attachment=col_data.get('allows_attachment', False),
+                    attachment_required=col_data.get('attachment_required', False)
                 )
                 
                 # Link to template
@@ -726,3 +892,62 @@ class RowCursorSerializer(serializers.Serializer):
     prev_cursor = serializers.CharField(allow_null=True)
     total_count = serializers.IntegerField()
     has_more = serializers.BooleanField()
+
+
+# ============================================================================
+# Attachment Serializers
+# ============================================================================
+
+class ActivityRowAttachmentSerializer(serializers.ModelSerializer):
+    """Serializer for attachment metadata (without file content)"""
+    
+    download_url = serializers.ReadOnlyField()
+    preview_url = serializers.ReadOnlyField()
+    
+    class Meta:
+        model = ActivityRowAttachment
+        fields = [
+            'id', 'row', 'column_key', 'original_filename', 
+            'file_size', 'mime_type', 'is_image',
+            'download_url', 'preview_url',
+            'created_at', 'updated_at'
+        ]
+        read_only_fields = ['id', 'is_image', 'created_at', 'updated_at']
+
+
+class ActivityRowAttachmentCreateSerializer(serializers.Serializer):
+    """Serializer for creating attachments"""
+    
+    row_id = serializers.IntegerField()
+    column_key = serializers.CharField(max_length=100)
+    file = serializers.FileField()
+    
+    def validate_row_id(self, value):
+        """Validate row exists"""
+        try:
+            ActivitySheetRow.objects.get(id=value)
+        except ActivitySheetRow.DoesNotExist:
+            raise serializers.ValidationError("Row not found")
+        return value
+    
+    def validate_file(self, value):
+        """Validate file size (max 10MB)"""
+        max_size = 10 * 1024 * 1024  # 10MB
+        if value.size > max_size:
+            raise serializers.ValidationError("File size must be less than 10MB")
+        return value
+    
+    def create(self, validated_data):
+        row = ActivitySheetRow.objects.get(id=validated_data['row_id'])
+        file_obj = validated_data['file']
+        
+        attachment = ActivityRowAttachment.objects.create(
+            row=row,
+            column_key=validated_data['column_key'],
+            original_filename=file_obj.name,
+            file_size=file_obj.size,
+            mime_type=file_obj.content_type or 'application/octet-stream',
+            file_content=file_obj.read()
+        )
+        
+        return attachment

@@ -26,6 +26,8 @@ class ActivityColumnDefinition(models.Model):
         ('text', 'Text'),
         ('number', 'Number'),
         ('date', 'Date'),
+        ('email', 'Email'),
+        ('tel', 'Phone'),
         ('boolean', 'Yes/No'),
         ('select', 'Dropdown'),
     ]
@@ -59,6 +61,16 @@ class ActivityColumnDefinition(models.Model):
         default=list, 
         blank=True,
         help_text="Options for 'select' data type"
+    )
+    
+    # Attachment settings
+    allows_attachment = models.BooleanField(
+        default=False,
+        help_text="Whether this column allows file attachments"
+    )
+    attachment_required = models.BooleanField(
+        default=False,
+        help_text="Whether attachment is required when allows_attachment is True"
     )
     
     created_at = models.DateTimeField(auto_now_add=True)
@@ -146,6 +158,10 @@ class ActivityTemplate(models.Model):
     
     name = models.CharField(max_length=255)
     description = models.TextField(blank=True)
+    notes = models.TextField(
+        blank=True, 
+        help_text='Instructions or notes for users filling out this template'
+    )
     owner = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
@@ -161,10 +177,10 @@ class ActivityTemplate(models.Model):
         help_text="Soft delete flag - archived templates keep this True"
     )
     
-    # Only one template can be active at a time - this is the default for users
+    # Multiple templates can be active at the same time
     is_active_title = models.BooleanField(
         default=False,
-        help_text="If True, this is the active title users will see by default. Only one title can be active."
+        help_text="If True, this template is active and visible to users. Multiple templates can be active."
     )
     
     # Header image for Excel export
@@ -354,6 +370,17 @@ class ActivitySheetRow(models.Model):
     )
     height = models.PositiveIntegerField(default=32)
     
+    # Per-activity submission status - each activity can be submitted individually
+    is_submitted = models.BooleanField(
+        default=False,
+        help_text="If True, this activity has been submitted and cannot be edited."
+    )
+    submitted_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="Timestamp when activity was submitted"
+    )
+    
     # For tracking changes and conflict resolution
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -396,4 +423,70 @@ class ActivitySheetRow(models.Model):
         """Override save to keep row_number in sync with row_order for backward compatibility."""
         if self.row_number != self.row_order:
             self.row_number = self.row_order
+        super().save(*args, **kwargs)
+
+
+class ActivityRowAttachment(models.Model):
+    """
+    Stores file attachments for activity rows.
+    Files are stored as binary blobs for data integrity.
+    Main API returns only URL, actual file is served via separate download endpoint.
+    """
+    
+    row = models.ForeignKey(
+        ActivitySheetRow,
+        on_delete=models.CASCADE,
+        related_name='attachments'
+    )
+    column_key = models.CharField(
+        max_length=100,
+        help_text="The column key this attachment belongs to"
+    )
+    
+    # File metadata
+    original_filename = models.CharField(max_length=255)
+    file_size = models.PositiveIntegerField(help_text="File size in bytes")
+    mime_type = models.CharField(max_length=100)
+    
+    # Binary file content stored as blob
+    file_content = models.BinaryField(
+        help_text="Binary file content stored as blob"
+    )
+    
+    # For quick identification
+    is_image = models.BooleanField(
+        default=False,
+        help_text="True if file is an image that can be previewed"
+    )
+    
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    
+    class Meta:
+        ordering = ['-created_at']
+        verbose_name = 'Row Attachment'
+        verbose_name_plural = 'Row Attachments'
+        indexes = [
+            models.Index(fields=['row', 'column_key']),
+        ]
+    
+    def __str__(self):
+        return f"{self.original_filename} - Row {self.row_id}"
+    
+    @property
+    def download_url(self):
+        """Generate download URL for this attachment"""
+        return f"/api/activities/attachments/{self.id}/download/"
+    
+    @property
+    def preview_url(self):
+        """Generate preview URL for images"""
+        if self.is_image:
+            return f"/api/activities/attachments/{self.id}/preview/"
+        return None
+    
+    def save(self, *args, **kwargs):
+        """Auto-detect if file is an image based on mime type"""
+        image_mimes = ['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/svg+xml']
+        self.is_image = self.mime_type in image_mimes
         super().save(*args, **kwargs)
