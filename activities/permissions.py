@@ -8,11 +8,20 @@ from rest_framework import permissions
 
 class IsAdminUser(permissions.BasePermission):
     """
-    Permission for admin-only actions (column management).
+    Permission for admin-only actions.
+    Allows users with role 'admin' or 'super_admin'.
+    Also checks is_staff for backward compatibility.
     """
     
     def has_permission(self, request, view):
-        return request.user and request.user.is_authenticated and request.user.is_staff
+        if not request.user or not request.user.is_authenticated:
+            return False
+        # Check role-based access (admin or super_admin)
+        user_role = getattr(request.user, 'role', None)
+        if user_role in ['admin', 'super_admin']:
+            return True
+        # Fallback to is_staff for backward compatibility
+        return request.user.is_staff
 
 
 class IsTemplateOwner(permissions.BasePermission):
@@ -22,7 +31,11 @@ class IsTemplateOwner(permissions.BasePermission):
     """
     
     def has_object_permission(self, request, view, obj):
-        # Admins can access all
+        # Check role-based admin access
+        user_role = getattr(request.user, 'role', None)
+        if user_role in ['admin', 'super_admin']:
+            return True
+        # Fallback to is_staff for backward compatibility
         if request.user.is_staff:
             return True
         
@@ -37,7 +50,11 @@ class IsSheetOwner(permissions.BasePermission):
     """
     
     def has_object_permission(self, request, view, obj):
-        # Admins can access all
+        # Check role-based admin access
+        user_role = getattr(request.user, 'role', None)
+        if user_role in ['admin', 'super_admin']:
+            return True
+        # Fallback to is_staff for backward compatibility
         if request.user.is_staff:
             return True
         
@@ -62,8 +79,12 @@ class IsColumnDefinitionEditable(permissions.BasePermission):
     """
     
     def has_object_permission(self, request, view, obj):
+        # Check role-based admin access
+        user_role = getattr(request.user, 'role', None)
+        is_admin = user_role in ['admin', 'super_admin'] or request.user.is_staff
+        
         # Only admins can edit columns
-        if not request.user.is_staff:
+        if not is_admin:
             return False
         
         # For DELETE, check if column can be deleted

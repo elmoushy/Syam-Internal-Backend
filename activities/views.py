@@ -56,6 +56,15 @@ from .pagination import (
 from .constants import MAX_ROWS_PER_PAGE
 
 
+def is_admin_user(user):
+    """
+    Helper function to check if user has admin privileges.
+    Checks role field for 'admin' or 'super_admin', with is_staff fallback.
+    """
+    user_role = getattr(user, 'role', None)
+    return user_role in ['admin', 'super_admin'] or user.is_staff
+
+
 # ============================================================================
 # Column Definition Views (Admin Only)
 # ============================================================================
@@ -226,7 +235,7 @@ class TemplateListCreateView(generics.ListCreateAPIView):
         mine_only = self.request.query_params.get('mine_only', 'false')
         if mine_only.lower() == 'true':
             queryset = queryset.filter(owner=user)
-        elif not user.is_staff:
+        elif not is_admin_user(user):
             # Regular users see their own + published templates
             queryset = queryset.filter(
                 Q(owner=user) | Q(status='published', is_deleted=False)
@@ -395,7 +404,7 @@ class SheetListCreateView(generics.ListCreateAPIView):
         queryset = ActivitySheet.objects.all()
         
         # Filter by owner (admins can see all)
-        if not user.is_staff:
+        if not is_admin_user(user):
             queryset = queryset.filter(owner=user)
         else:
             owner_filter = self.request.query_params.get('owner')
@@ -524,7 +533,7 @@ class SheetRowBulkView(views.APIView):
     def get_sheet(self, sheet_id, request):
         sheet = get_object_or_404(ActivitySheet, pk=sheet_id)
         # Check ownership
-        if not request.user.is_staff and sheet.owner != request.user:
+        if not is_admin_user(request.user) and sheet.owner != request.user:
             self.permission_denied(request)
         return sheet
     
@@ -595,7 +604,7 @@ class SheetRowDetailView(generics.RetrieveUpdateDestroyAPIView):
     def get_object(self):
         obj = super().get_object()
         # Check sheet ownership
-        if not self.request.user.is_staff and obj.sheet.owner != self.request.user:
+        if not is_admin_user(self.request.user) and obj.sheet.owner != self.request.user:
             self.permission_denied(self.request)
         return obj
 
@@ -758,7 +767,7 @@ class TemplateDownloadView(views.APIView):
         
         # Check access - published templates are public, draft only to owner
         if template.status != 'published':
-            if not request.user.is_staff and template.owner != request.user:
+            if not is_admin_user(request.user) and template.owner != request.user:
                 return Response(
                     {'error': 'ليس لديك صلاحية لتحميل هذا النموذج'},
                     status=status.HTTP_403_FORBIDDEN
@@ -2454,28 +2463,30 @@ class UserActivityPageView(views.APIView):
     GET: Get everything needed for the user activity page (/activities/local).
     
     Returns:
-    - active_templates: All active templates set by admin (if any)
+    - templates: All published templates (both active and inactive)
+    - has_active_templates: Whether there are any active templates
     
     This is a simplified endpoint for regular users.
+    Templates with is_active_title=False are shown but user cannot add/submit activities.
     """
     permission_classes = [IsAuthenticated]
     
     def get(self, request):
-        # Get all active templates
-        active_templates = ActivityTemplate.objects.filter(
-            is_active_title=True,
+        # Get all published templates (both active and inactive)
+        published_templates = ActivityTemplate.objects.filter(
             status='published',
             is_deleted=False
-        ).order_by('-updated_at')
+        ).order_by('-is_active_title', '-updated_at')  # Active ones first
         
-        if not active_templates.exists():
+        if not published_templates.exists():
             return Response({
                 'has_active_templates': False,
-                'active_templates': [],
-                'message': 'لا يوجد نموذج نشط حالياً. يرجى الانتظار حتى يقوم المسؤول بتفعيل نموذج.'
+                'templates': [],
+                'active_templates': [],  # For backward compatibility
+                'message': 'لا يوجد نموذج منشور حالياً. يرجى الانتظار حتى يقوم المسؤول بنشر نموذج.'
             })
         
-        # Serialize all active templates
+        # Serialize all published templates
         templates_data = [
             {
                 'id': template.id,
@@ -2484,14 +2495,21 @@ class UserActivityPageView(views.APIView):
                 'notes': template.notes,
                 'header_image': template.header_image.url if template.header_image else None,
                 'column_count': template.template_columns.count(),
-                'is_active_title': True,
+                'is_active_title': template.is_active_title,
             }
-            for template in active_templates
+            for template in published_templates
         ]
         
+        # Check if there are any active templates
+        has_active = published_templates.filter(is_active_title=True).exists()
+        
+        # For backward compatibility, also include active_templates list
+        active_templates_data = [t for t in templates_data if t['is_active_title']]
+        
         return Response({
-            'has_active_templates': True,
-            'active_templates': templates_data,
+            'has_active_templates': has_active,
+            'templates': templates_data,
+            'active_templates': active_templates_data,  # For backward compatibility
             'count': len(templates_data)
         })
 
@@ -2550,6 +2568,7 @@ class UserActivitiesListCreateView(views.APIView):
                     'id': template.id,
                     'name': template.name,
                     'description': template.description,
+                    'is_active_title': template.is_active_title,
                 },
                 'activities': [],
                 'columns': self._get_template_columns(template),
@@ -2616,6 +2635,7 @@ class UserActivitiesListCreateView(views.APIView):
                 'id': template.id,
                 'name': template.name,
                 'description': template.description,
+                'is_active_title': template.is_active_title,
             },
             'sheet': {
                 'id': sheet.id,
@@ -2686,6 +2706,12 @@ class UserActivitiesListCreateView(views.APIView):
             return Response({
                 'error': 'النموذج غير موجود أو غير منشور'
             }, status=status.HTTP_404_NOT_FOUND)
+        
+        # Check if template is active - users cannot add activities to inactive templates
+        if not template.is_active_title:
+            return Response({
+                'error': 'لا يمكن إضافة أنشطة إلى نموذج غير نشط. يرجى الانتظار حتى يقوم المسؤول بتفعيل النموذج.'
+            }, status=status.HTTP_403_FORBIDDEN)
         
         # Get or create user's sheet for this template
         sheet = self.get_or_create_user_sheet(template, request.user)
@@ -2941,6 +2967,12 @@ class UserActivitySubmitView(views.APIView):
                 'error': 'النشاط غير موجود'
             }, status=status.HTTP_404_NOT_FOUND)
         
+        # Check if template is active - users cannot submit activities for inactive templates
+        if row.sheet.template and not row.sheet.template.is_active_title:
+            return Response({
+                'error': 'لا يمكن تقديم أنشطة لنموذج غير نشط. يرجى الانتظار حتى يقوم المسؤول بتفعيل النموذج.'
+            }, status=status.HTTP_403_FORBIDDEN)
+        
         # Check if already submitted
         if row.is_submitted:
             return Response({
@@ -2982,6 +3014,12 @@ class UserTemplateSubmitView(views.APIView):
             return Response({
                 'error': 'النموذج غير موجود أو غير منشور'
             }, status=status.HTTP_404_NOT_FOUND)
+        
+        # Check if template is active - users cannot submit activities for inactive templates
+        if not template.is_active_title:
+            return Response({
+                'error': 'لا يمكن تقديم أنشطة لنموذج غير نشط. يرجى الانتظار حتى يقوم المسؤول بتفعيل النموذج.'
+            }, status=status.HTTP_403_FORBIDDEN)
         
         # Get user's sheet for this template
         try:
@@ -3036,7 +3074,7 @@ class RowAttachmentListCreateView(views.APIView):
         row = get_object_or_404(ActivitySheetRow, id=row_id)
         
         # Check permissions - owner or admin
-        if row.sheet.owner != request.user and not request.user.is_staff:
+        if row.sheet.owner != request.user and not is_admin_user(request.user):
             return Response(
                 {'error': 'ليس لديك صلاحية لعرض المرفقات'},
                 status=status.HTTP_403_FORBIDDEN
@@ -3060,7 +3098,7 @@ class RowAttachmentListCreateView(views.APIView):
         row = get_object_or_404(ActivitySheetRow, id=row_id)
         
         # Check permissions - owner or admin
-        if row.sheet.owner != request.user and not request.user.is_staff:
+        if row.sheet.owner != request.user and not is_admin_user(request.user):
             return Response(
                 {'error': 'ليس لديك صلاحية لرفع مرفقات'},
                 status=status.HTTP_403_FORBIDDEN
@@ -3120,7 +3158,7 @@ class AttachmentDetailView(views.APIView):
         attachment = get_object_or_404(ActivityRowAttachment, id=attachment_id)
         
         # Check permissions
-        if attachment.row.sheet.owner != request.user and not request.user.is_staff:
+        if attachment.row.sheet.owner != request.user and not is_admin_user(request.user):
             return Response(
                 {'error': 'ليس لديك صلاحية لعرض هذا المرفق'},
                 status=status.HTTP_403_FORBIDDEN
@@ -3136,7 +3174,7 @@ class AttachmentDetailView(views.APIView):
         attachment = get_object_or_404(ActivityRowAttachment, id=attachment_id)
         
         # Check permissions - owner or admin
-        if attachment.row.sheet.owner != request.user and not request.user.is_staff:
+        if attachment.row.sheet.owner != request.user and not is_admin_user(request.user):
             return Response(
                 {'error': 'ليس لديك صلاحية لحذف هذا المرفق'},
                 status=status.HTTP_403_FORBIDDEN
@@ -3167,7 +3205,7 @@ class AttachmentDownloadView(views.APIView):
         attachment = get_object_or_404(ActivityRowAttachment, id=attachment_id)
         
         # Check permissions
-        if attachment.row.sheet.owner != request.user and not request.user.is_staff:
+        if attachment.row.sheet.owner != request.user and not is_admin_user(request.user):
             return Response(
                 {'error': 'ليس لديك صلاحية لتحميل هذا المرفق'},
                 status=status.HTTP_403_FORBIDDEN
@@ -3200,7 +3238,7 @@ class AttachmentPreviewView(views.APIView):
         attachment = get_object_or_404(ActivityRowAttachment, id=attachment_id)
         
         # Check permissions
-        if attachment.row.sheet.owner != request.user and not request.user.is_staff:
+        if attachment.row.sheet.owner != request.user and not is_admin_user(request.user):
             return Response(
                 {'error': 'ليس لديك صلاحية لعرض هذا المرفق'},
                 status=status.HTTP_403_FORBIDDEN

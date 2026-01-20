@@ -1828,18 +1828,10 @@ class LDAPLoginView(APIView):
 
 # Define all available pages in the system (configurable)
 AVAILABLE_PAGES = [
-    # {'name': 'news', 'display_name': 'الأخبار', 'description': 'View news page'},
-    # {'name': 'quick-links', 'display_name': 'الروابط السريعة', 'description': 'View quick links page'},
-    # {'name': 'surveys', 'display_name': 'الاستطلاعات', 'description': 'View surveys page'},
     {'name': 'manage-surveys', 'display_name': 'إدارة الاستطلاعات', 'description': 'Manage surveys (create, edit, delete)'},
     {'name': 'manage-news', 'display_name': 'إدارة الأخبار', 'description': 'Manage news articles (create, edit, delete)'},
     {'name': 'manage-quicklinks', 'display_name': 'إدارة الروابط السريعة', 'description': 'Manage quick links (create, edit, delete)'},
-    {'name': 'manage-audit', 'display_name': 'سجل التدقيق', 'description': 'View audit logs and system activity'},
-    # {'name': 'manage-users', 'display_name': 'إدارة المستخدمين', 'description': 'Manage users (create, edit, delete, change roles)'},
-    # {'name': 'manage-roles', 'display_name': 'إدارة الأدوار', 'description': 'Manage roles and page permissions'},
-    # {'name': 'system-settings', 'display_name': 'إعدادات النظام', 'description': 'System configuration settings'},
-    # {'name': 'chat', 'display_name': 'المحادثات', 'description': 'Internal chat feature'},
-    # {'name': 'organization-chart', 'display_name': 'هيكل الشركة', 'description': 'View organization chart'},
+    {'name': 'manage-templates', 'display_name': 'إدارة نماذج الأنشطة', 'description': 'Manage activity templates (create, edit, publish)'},
 ]
 
 
