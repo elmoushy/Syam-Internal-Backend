@@ -15,7 +15,7 @@ from .models import (
     ActivitySheetRow,
     ActivityRowAttachment,
 )
-from .constants import MAX_ROWS_PER_REQUEST
+from .constants import MAX_ROWS_PER_REQUEST, MANDATORY_COLUMNS, MANDATORY_COLUMN_KEYS
 
 
 # ============================================================================
@@ -207,10 +207,11 @@ class ActivityTemplateDetailSerializer(serializers.ModelSerializer):
         read_only_fields = ['id', 'owner', 'status', 'is_deleted', 'created_at', 'updated_at', 'published_at']
     
     def get_columns(self, obj):
-        """Return simplified column format for frontend"""
+        """Return simplified column format for frontend with is_mandatory flag"""
         return [
             {
                 'id': tc.column_definition.id,
+                'key': tc.column_definition.key,
                 'name': tc.column_definition.label,
                 'data_type': tc.column_definition.data_type,
                 'options': tc.column_definition.options or [],
@@ -218,7 +219,8 @@ class ActivityTemplateDetailSerializer(serializers.ModelSerializer):
                 'is_required': tc.is_required,
                 'is_visible': tc.is_visible,
                 'allows_attachment': tc.column_definition.allows_attachment,
-                'attachment_required': tc.column_definition.attachment_required
+                'attachment_required': tc.column_definition.attachment_required,
+                'is_mandatory': tc.column_definition.key in MANDATORY_COLUMN_KEYS or tc.column_definition.is_system
             }
             for tc in obj.template_columns.select_related('column_definition').order_by('order')
         ]
@@ -277,8 +279,48 @@ class ActivityTemplateCreateSerializer(serializers.ModelSerializer):
             counter += 1
         return key
     
+    def _ensure_mandatory_columns(self, columns_data):
+        """
+        Ensure mandatory columns are present in the columns list.
+        Add them if missing, preserving any user-provided order.
+        """
+        existing_labels = {col.get('label', '').strip() for col in columns_data}
+        existing_keys = set()
+        
+        # Build set of existing keys (for columns that have explicit keys)
+        for col in columns_data:
+            if col.get('key'):
+                existing_keys.add(col['key'])
+        
+        # Check for mandatory columns and add if missing
+        for mandatory in MANDATORY_COLUMNS:
+            mandatory_label = mandatory['label']
+            mandatory_key = mandatory['key']
+            
+            # Check if mandatory column already exists (by label or key)
+            found = (
+                mandatory_label in existing_labels or
+                mandatory_key in existing_keys
+            )
+            
+            if not found:
+                # Add mandatory column at the end
+                columns_data.append({
+                    'label': mandatory_label,
+                    'data_type': mandatory['data_type'],
+                    'is_required': mandatory.get('is_required', True),
+                    'is_mandatory': True,  # Mark as mandatory (cannot be removed)
+                    'key': mandatory_key,
+                })
+        
+        return columns_data
+    
     def create(self, validated_data):
         columns_data = validated_data.pop('columns', [])
+        
+        # Ensure mandatory columns are present
+        columns_data = self._ensure_mandatory_columns(columns_data)
+        
         template = ActivityTemplate.objects.create(**validated_data)
         
         existing_keys = set()
@@ -289,10 +331,16 @@ class ActivityTemplateCreateSerializer(serializers.ModelSerializer):
             data_type = col_data.get('data_type', 'text')
             options = col_data.get('options', [])
             
-            # Auto-generate key from label
-            key = self._generate_key(label)
+            # Use explicit key if provided (for mandatory columns), otherwise generate
+            if col_data.get('key'):
+                key = col_data['key']
+            else:
+                key = self._generate_key(label)
             key = self._ensure_unique_key(key, existing_keys)
             existing_keys.add(key)
+            
+            # Check if this is a mandatory column
+            is_mandatory = key in MANDATORY_COLUMN_KEYS or col_data.get('is_mandatory', False)
             
             # Create column definition with fixed widths
             column_def = ActivityColumnDefinition.objects.create(
@@ -303,7 +351,7 @@ class ActivityTemplateCreateSerializer(serializers.ModelSerializer):
                 default_width=120,  # Fixed default width
                 min_width=80,       # Fixed min width
                 order=idx,
-                is_system=False,
+                is_system=is_mandatory,  # Mark mandatory columns as system columns
                 is_active=True,
                 allows_attachment=col_data.get('allows_attachment', False),
                 attachment_required=col_data.get('attachment_required', False)
@@ -314,7 +362,7 @@ class ActivityTemplateCreateSerializer(serializers.ModelSerializer):
                 template=template,
                 column_definition=column_def,
                 order=idx,
-                is_required=col_data.get('is_required', False),
+                is_required=col_data.get('is_required', False) or is_mandatory,  # Mandatory columns are always required
                 is_visible=True
             )
         
@@ -406,6 +454,42 @@ class ActivityTemplateUpdateSerializer(serializers.ModelSerializer):
             counter += 1
         return key
     
+    def _ensure_mandatory_columns(self, columns_data):
+        """
+        Ensure mandatory columns are present in the columns list.
+        Add them if missing, preserving any user-provided order.
+        """
+        existing_labels = {col.get('label', '').strip() for col in columns_data}
+        existing_keys = set()
+        
+        # Build set of existing keys (for columns that have explicit keys)
+        for col in columns_data:
+            if col.get('key'):
+                existing_keys.add(col['key'])
+        
+        # Check for mandatory columns and add if missing
+        for mandatory in MANDATORY_COLUMNS:
+            mandatory_label = mandatory['label']
+            mandatory_key = mandatory['key']
+            
+            # Check if mandatory column already exists (by label or key)
+            found = (
+                mandatory_label in existing_labels or
+                mandatory_key in existing_keys
+            )
+            
+            if not found:
+                # Add mandatory column at the end
+                columns_data.append({
+                    'label': mandatory_label,
+                    'data_type': mandatory['data_type'],
+                    'is_required': mandatory.get('is_required', True),
+                    'is_mandatory': True,  # Mark as mandatory (cannot be removed)
+                    'key': mandatory_key,
+                })
+        
+        return columns_data
+    
     def update(self, instance, validated_data):
         """Handle status change, is_active_title exclusivity, and column updates"""
         from django.utils import timezone
@@ -421,6 +505,9 @@ class ActivityTemplateUpdateSerializer(serializers.ModelSerializer):
         
         # Handle column updates (only for draft templates)
         if columns_data is not None and instance.status == 'draft':
+            # Ensure mandatory columns are present
+            columns_data = self._ensure_mandatory_columns(columns_data)
+            
             with transaction.atomic():
                 # Get existing column definition IDs to clean up later
                 old_column_def_ids = list(
@@ -448,10 +535,16 @@ class ActivityTemplateUpdateSerializer(serializers.ModelSerializer):
                     data_type = col_data.get('data_type', 'text')
                     options = col_data.get('options', [])
                     
-                    # Auto-generate key from label
-                    key = self._generate_key(label)
+                    # Use explicit key if provided (for mandatory columns), otherwise generate
+                    if col_data.get('key'):
+                        key = col_data['key']
+                    else:
+                        key = self._generate_key(label)
                     key = self._ensure_unique_key(key, existing_keys)
                     existing_keys.add(key)
+                    
+                    # Check if this is a mandatory column
+                    is_mandatory = key in MANDATORY_COLUMN_KEYS or col_data.get('is_mandatory', False)
                     
                     # Create column definition
                     column_def = ActivityColumnDefinition.objects.create(
@@ -462,7 +555,7 @@ class ActivityTemplateUpdateSerializer(serializers.ModelSerializer):
                         default_width=120,
                         min_width=80,
                         order=idx,
-                        is_system=False,
+                        is_system=is_mandatory,  # Mark mandatory columns as system columns
                         is_active=True,
                         allows_attachment=col_data.get('allows_attachment', False),
                         attachment_required=col_data.get('attachment_required', False)
@@ -473,7 +566,7 @@ class ActivityTemplateUpdateSerializer(serializers.ModelSerializer):
                         template=instance,
                         column_definition=column_def,
                         order=idx,
-                        is_required=col_data.get('is_required', False),
+                        is_required=col_data.get('is_required', False) or is_mandatory,  # Mandatory columns are always required
                         is_visible=True
                     )
         
@@ -529,8 +622,47 @@ class TemplateColumnsUpdateSerializer(serializers.Serializer):
             counter += 1
         return key
     
+    def _ensure_mandatory_columns(self, columns_data):
+        """
+        Ensure mandatory columns are present in the columns list.
+        Add them if missing, preserving any user-provided order.
+        """
+        existing_labels = {col.get('label', '').strip() for col in columns_data}
+        existing_keys = set()
+        
+        # Build set of existing keys (for columns that have explicit keys)
+        for col in columns_data:
+            if col.get('key'):
+                existing_keys.add(col['key'])
+        
+        # Check for mandatory columns and add if missing
+        for mandatory in MANDATORY_COLUMNS:
+            mandatory_label = mandatory['label']
+            mandatory_key = mandatory['key']
+            
+            # Check if mandatory column already exists (by label or key)
+            found = (
+                mandatory_label in existing_labels or
+                mandatory_key in existing_keys
+            )
+            
+            if not found:
+                # Add mandatory column at the end
+                columns_data.append({
+                    'label': mandatory_label,
+                    'data_type': mandatory['data_type'],
+                    'is_required': mandatory.get('is_required', True),
+                    'is_mandatory': True,  # Mark as mandatory (cannot be removed)
+                    'key': mandatory_key,
+                })
+        
+        return columns_data
+    
     def save(self, template):
         columns_data = self.validated_data['columns']
+        
+        # Ensure mandatory columns are present
+        columns_data = self._ensure_mandatory_columns(columns_data)
         
         with transaction.atomic():
             # Get existing column definition IDs to clean up later
@@ -559,10 +691,16 @@ class TemplateColumnsUpdateSerializer(serializers.Serializer):
                 data_type = col_data.get('data_type', 'text')
                 options = col_data.get('options', [])
                 
-                # Auto-generate key from label
-                key = self._generate_key(label)
+                # Use explicit key if provided (for mandatory columns), otherwise generate
+                if col_data.get('key'):
+                    key = col_data['key']
+                else:
+                    key = self._generate_key(label)
                 key = self._ensure_unique_key(key, existing_keys)
                 existing_keys.add(key)
+                
+                # Check if this is a mandatory column
+                is_mandatory = key in MANDATORY_COLUMN_KEYS or col_data.get('is_mandatory', False)
                 
                 # Create column definition
                 column_def = ActivityColumnDefinition.objects.create(
@@ -573,7 +711,7 @@ class TemplateColumnsUpdateSerializer(serializers.Serializer):
                     default_width=120,
                     min_width=80,
                     order=idx,
-                    is_system=False,
+                    is_system=is_mandatory,  # Mark mandatory columns as system columns
                     is_active=True,
                     allows_attachment=col_data.get('allows_attachment', False),
                     attachment_required=col_data.get('attachment_required', False)
@@ -584,7 +722,7 @@ class TemplateColumnsUpdateSerializer(serializers.Serializer):
                     template=template,
                     column_definition=column_def,
                     order=idx,
-                    is_required=col_data.get('is_required', False),
+                    is_required=col_data.get('is_required', False) or is_mandatory,  # Mandatory columns are always required
                     is_visible=True
                 )
         
