@@ -5,6 +5,187 @@ from django.conf import settings
 from django.db import migrations, models
 
 
+def table_exists(schema_editor, table_name):
+    """Check if a table already exists in the database."""
+    db_vendor = schema_editor.connection.vendor
+    
+    if db_vendor == 'oracle':
+        with schema_editor.connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT COUNT(*) FROM user_tables WHERE table_name = UPPER(%s)",
+                [table_name]
+            )
+            return cursor.fetchone()[0] > 0
+    else:
+        # For SQLite and other databases
+        with schema_editor.connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name=%s",
+                [table_name]
+            )
+            return cursor.fetchone() is not None
+
+
+class SafeCreateModel(migrations.CreateModel):
+    """
+    A CreateModel operation that safely handles existing tables.
+    For Oracle, it checks if the table exists before attempting to create it.
+    """
+    
+    def database_forwards(self, app_label, schema_editor, from_state, to_state):
+        model = to_state.apps.get_model(app_label, self.name)
+        table_name = model._meta.db_table
+        
+        if table_exists(schema_editor, table_name):
+            print(f"Table {table_name} already exists, skipping creation")
+            return
+        
+        # Table doesn't exist, create it normally
+        super().database_forwards(app_label, schema_editor, from_state, to_state)
+    
+    def database_backwards(self, app_label, schema_editor, from_state, to_state):
+        # For backwards, check if table exists before trying to delete
+        model = from_state.apps.get_model(app_label, self.name)
+        table_name = model._meta.db_table
+        
+        if not table_exists(schema_editor, table_name):
+            print(f"Table {table_name} doesn't exist, skipping deletion")
+            return
+        
+        super().database_backwards(app_label, schema_editor, from_state, to_state)
+
+
+def safe_create_indexes(apps, schema_editor):
+    """
+    Safely create indexes, skipping if they already exist.
+    Works for both Oracle and SQLite.
+    """
+    db_vendor = schema_editor.connection.vendor
+    
+    # Get the actual table name from the model (handles Oracle truncation)
+    ActivitySheetRow = apps.get_model('activities', 'ActivitySheetRow')
+    table_name = ActivitySheetRow._meta.db_table
+    
+    if db_vendor == 'oracle':
+        # For Oracle, we need to check if indexes exist first
+        with schema_editor.connection.cursor() as cursor:
+            # Check and create first index
+            cursor.execute(
+                "SELECT COUNT(*) FROM user_indexes WHERE index_name = UPPER('actsheetrow_sheet_row_idx')"
+            )
+            if cursor.fetchone()[0] == 0:
+                try:
+                    cursor.execute(
+                        f'CREATE INDEX "ACTSHEETROW_SHEET_ROW_IDX" ON "{table_name.upper()}" ("SHEET_ID", "ROW_NUMBER")'
+                    )
+                except Exception as e:
+                    if 'ORA-01408' not in str(e) and 'ORA-00955' not in str(e) and 'ORA-00942' not in str(e):
+                        raise
+                    print(f"Index actsheetrow_sheet_row_idx already exists, skipping")
+            
+            # Check and create second index
+            cursor.execute(
+                "SELECT COUNT(*) FROM user_indexes WHERE index_name = UPPER('actsheetrow_sheet_upd_idx')"
+            )
+            if cursor.fetchone()[0] == 0:
+                try:
+                    cursor.execute(
+                        f'CREATE INDEX "ACTSHEETROW_SHEET_UPD_IDX" ON "{table_name.upper()}" ("SHEET_ID", "UPDATED_AT")'
+                    )
+                except Exception as e:
+                    if 'ORA-01408' not in str(e) and 'ORA-00955' not in str(e) and 'ORA-00942' not in str(e):
+                        raise
+                    print(f"Index actsheetrow_sheet_upd_idx already exists, skipping")
+    else:
+        # For SQLite, use IF NOT EXISTS syntax
+        with schema_editor.connection.cursor() as cursor:
+            cursor.execute(
+                f'CREATE INDEX IF NOT EXISTS "{table_name}_sheet_row_idx" ON "{table_name}" ("sheet_id", "row_number")'
+            )
+            cursor.execute(
+                f'CREATE INDEX IF NOT EXISTS "{table_name}_sheet_upd_idx" ON "{table_name}" ("sheet_id", "updated_at")'
+            )
+
+
+def safe_create_unique_constraint_sheetrow(apps, schema_editor):
+    """
+    Safely create unique constraint for ActivitySheetRow, skipping if exists.
+    Works for both Oracle and SQLite.
+    """
+    db_vendor = schema_editor.connection.vendor
+    
+    # Get the actual table name from the model (handles Oracle truncation)
+    ActivitySheetRow = apps.get_model('activities', 'ActivitySheetRow')
+    table_name = ActivitySheetRow._meta.db_table
+    
+    if db_vendor == 'oracle':
+        with schema_editor.connection.cursor() as cursor:
+            # Check if unique constraint already exists
+            cursor.execute("""
+                SELECT COUNT(*) FROM user_constraints 
+                WHERE table_name = UPPER(%s)
+                AND constraint_type = 'U'
+            """, [table_name])
+            if cursor.fetchone()[0] == 0:
+                try:
+                    cursor.execute(
+                        f'ALTER TABLE "{table_name.upper()}" ADD CONSTRAINT "ACTSHEETROW_SHEET_ROW_UNQ" UNIQUE ("SHEET_ID", "ROW_NUMBER")'
+                    )
+                except Exception as e:
+                    if 'ORA-02261' not in str(e) and 'ORA-01408' not in str(e) and 'ORA-00942' not in str(e):
+                        raise
+                    print(f"Unique constraint on ActivitySheetRow already exists or table issue, skipping")
+    else:
+        # SQLite: unique constraint is created via unique index
+        with schema_editor.connection.cursor() as cursor:
+            try:
+                cursor.execute(
+                    f'CREATE UNIQUE INDEX IF NOT EXISTS "{table_name}_sheet_id_row_number_uniq" ON "{table_name}" ("sheet_id", "row_number")'
+                )
+            except Exception:
+                pass  # Index already exists
+
+
+def safe_create_unique_constraint_templatecolumn(apps, schema_editor):
+    """
+    Safely create unique constraint for ActivityTemplateColumn, skipping if exists.
+    Works for both Oracle and SQLite.
+    """
+    db_vendor = schema_editor.connection.vendor
+    
+    # Get the actual table name from the model (handles Oracle truncation)
+    ActivityTemplateColumn = apps.get_model('activities', 'ActivityTemplateColumn')
+    table_name = ActivityTemplateColumn._meta.db_table
+    
+    if db_vendor == 'oracle':
+        with schema_editor.connection.cursor() as cursor:
+            # Check if unique constraint already exists
+            cursor.execute("""
+                SELECT COUNT(*) FROM user_constraints 
+                WHERE table_name = UPPER(%s)
+                AND constraint_type = 'U'
+            """, [table_name])
+            if cursor.fetchone()[0] == 0:
+                try:
+                    # Use table_name dynamically
+                    cursor.execute(
+                        f'ALTER TABLE "{table_name.upper()}" ADD CONSTRAINT "ACTTEMPCOL_TMPL_COLDEF_UNQ" UNIQUE ("TEMPLATE_ID", "COLUMN_DEFINITION_ID")'
+                    )
+                except Exception as e:
+                    if 'ORA-02261' not in str(e) and 'ORA-01408' not in str(e) and 'ORA-00942' not in str(e):
+                        raise
+                    print(f"Unique constraint on ActivityTemplateColumn already exists or table issue, skipping")
+    else:
+        # SQLite: unique constraint is created via unique index
+        with schema_editor.connection.cursor() as cursor:
+            try:
+                cursor.execute(
+                    f'CREATE UNIQUE INDEX IF NOT EXISTS "{table_name}_template_id_column_def_uniq" ON "{table_name}" ("template_id", "column_definition_id")'
+                )
+            except Exception:
+                pass  # Index already exists
+
+
 class Migration(migrations.Migration):
 
     initial = True
@@ -14,7 +195,7 @@ class Migration(migrations.Migration):
     ]
 
     operations = [
-        migrations.CreateModel(
+        SafeCreateModel(
             name='ActivityColumnDefinition',
             fields=[
                 ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
@@ -36,7 +217,7 @@ class Migration(migrations.Migration):
                 'ordering': ['order', 'id'],
             },
         ),
-        migrations.CreateModel(
+        SafeCreateModel(
             name='ActivityColumnValidation',
             fields=[
                 ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
@@ -54,7 +235,7 @@ class Migration(migrations.Migration):
                 'ordering': ['order'],
             },
         ),
-        migrations.CreateModel(
+        SafeCreateModel(
             name='ActivityTemplate',
             fields=[
                 ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
@@ -74,7 +255,7 @@ class Migration(migrations.Migration):
                 'ordering': ['-updated_at'],
             },
         ),
-        migrations.CreateModel(
+        SafeCreateModel(
             name='ActivitySheet',
             fields=[
                 ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
@@ -93,7 +274,7 @@ class Migration(migrations.Migration):
                 'ordering': ['-updated_at'],
             },
         ),
-        migrations.CreateModel(
+        SafeCreateModel(
             name='ActivitySheetRow',
             fields=[
                 ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
@@ -109,11 +290,13 @@ class Migration(migrations.Migration):
                 'verbose_name': 'Sheet Row',
                 'verbose_name_plural': 'Sheet Rows',
                 'ordering': ['row_number'],
-                'indexes': [models.Index(fields=['sheet', 'row_number'], name='activities__sheet_i_e11ba5_idx'), models.Index(fields=['sheet', 'updated_at'], name='activities__sheet_i_23adfd_idx')],
-                'unique_together': {('sheet', 'row_number')},
             },
         ),
-        migrations.CreateModel(
+        # Safe creation of indexes for ActivitySheetRow (handles Oracle ORA-01408)
+        migrations.RunPython(safe_create_indexes, migrations.RunPython.noop),
+        # Safe creation of unique constraint for ActivitySheetRow
+        migrations.RunPython(safe_create_unique_constraint_sheetrow, migrations.RunPython.noop),
+        SafeCreateModel(
             name='ActivityTemplateColumn',
             fields=[
                 ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
@@ -128,7 +311,8 @@ class Migration(migrations.Migration):
                 'verbose_name': 'Template Column',
                 'verbose_name_plural': 'Template Columns',
                 'ordering': ['order'],
-                'unique_together': {('template', 'column_definition')},
             },
         ),
+        # Safe creation of unique constraint for ActivityTemplateColumn (handles Oracle ORA-01408)
+        migrations.RunPython(safe_create_unique_constraint_templatecolumn, migrations.RunPython.noop),
     ]

@@ -2610,8 +2610,8 @@ class UserActivitiesListCreateView(views.APIView):
             desc_parts = []
             for col in columns[1:4]:  # Use next 3 columns for description
                 val = row.data.get(col['key'], '')
-                if val:
-                    desc_parts.append(val)
+                if val is not None and val != '':
+                    desc_parts.append(str(val))
             description = ' - '.join(desc_parts) if desc_parts else ''
             
             activities.append({
