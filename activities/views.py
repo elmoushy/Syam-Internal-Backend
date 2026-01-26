@@ -53,7 +53,7 @@ from .pagination import (
     TemplateListPagination,
     SheetListPagination,
 )
-from .constants import MAX_ROWS_PER_PAGE
+from .constants import MAX_ROWS_PER_PAGE, MANDATORY_COLUMN_KEYS
 
 
 def is_admin_user(user):
@@ -2656,7 +2656,7 @@ class UserActivitiesListCreateView(views.APIView):
         })
     
     def _get_template_columns(self, template):
-        """Get column definitions for template."""
+        """Get column definitions for template with mandatory columns at the end."""
         columns = []
         for tc in template.template_columns.select_related('column_definition').order_by('order'):
             col_def = tc.column_definition
@@ -2672,7 +2672,19 @@ class UserActivitiesListCreateView(views.APIView):
                 'allows_attachment': col_def.allows_attachment,
                 'attachment_required': col_def.attachment_required,
             })
-        return columns
+        
+        # Sort columns: non-mandatory first, then mandatory at the end
+        def is_mandatory_column(col):
+            key = col.get('key', '')
+            # Check if key starts with any mandatory column key prefix
+            for mandatory_key in MANDATORY_COLUMN_KEYS:
+                if key.startswith(mandatory_key):
+                    return True
+            return False
+        
+        non_mandatory = [col for col in columns if not is_mandatory_column(col)]
+        mandatory = [col for col in columns if is_mandatory_column(col)]
+        return non_mandatory + mandatory
     
     def _get_row_attachments(self, row):
         """Get attachments for a row."""
@@ -2823,7 +2835,7 @@ class UserActivityDetailView(views.APIView):
         })
     
     def _get_template_columns(self, template):
-        """Get column definitions for template."""
+        """Get column definitions for template with mandatory columns at the end."""
         columns = []
         for tc in template.template_columns.select_related('column_definition').order_by('order'):
             col_def = tc.column_definition
@@ -2839,7 +2851,19 @@ class UserActivityDetailView(views.APIView):
                 'allows_attachment': col_def.allows_attachment,
                 'attachment_required': col_def.attachment_required,
             })
-        return columns
+        
+        # Sort columns: non-mandatory first, then mandatory at the end
+        def is_mandatory_column(col):
+            key = col.get('key', '')
+            # Check if key starts with any mandatory column key prefix
+            for mandatory_key in MANDATORY_COLUMN_KEYS:
+                if key.startswith(mandatory_key):
+                    return True
+            return False
+        
+        non_mandatory = [col for col in columns if not is_mandatory_column(col)]
+        mandatory = [col for col in columns if is_mandatory_column(col)]
+        return non_mandatory + mandatory
     
     def _get_row_attachments(self, row):
         """Get attachments for a row, grouped by column_key."""
