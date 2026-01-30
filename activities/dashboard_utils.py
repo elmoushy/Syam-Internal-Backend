@@ -336,8 +336,11 @@ def get_kpi_summary(year: int, department_id: Optional[int] = None) -> Dict:
 def get_status_distribution(year: int, department_id: Optional[int] = None) -> Dict:
     """
     Get activity status distribution for donut chart.
-    Status is calculated based on actual vs required achievement percentages.
-    Only includes SUBMITTED activities (is_submitted=True) - excludes drafts that may be deleted.
+    
+    Status Logic (for FULL dashboard - all departments):
+    - مكتمل (Completed): Activities (rows) with is_submitted=True
+    - قيد التنفيذ (In Progress): Activities (rows) with is_submitted=False (drafts)
+    - لم يبدأ (Not Started): Number of non-participating departments (departments with no activities)
     
     Args:
         year: Year to calculate for
@@ -346,34 +349,66 @@ def get_status_distribution(year: int, department_id: Optional[int] = None) -> D
     Returns:
         Dict with status distribution data
     """
-    # Only submitted activities - drafts may be deleted
-    rows_qs = ActivitySheetRow.objects.filter(
-        sheet__created_at__year=year,
-        is_submitted=True  # Only submitted activities
+    # Ensure default department exists
+    default_dept = Department.get_default_department()
+    
+    # Base queryset for ALL rows (both submitted and draft)
+    all_rows_qs = ActivitySheetRow.objects.filter(
+        sheet__created_at__year=year
     ).select_related('sheet')
     
     if department_id:
-        rows_qs = rows_qs.filter(sheet__department_id=department_id)
+        all_rows_qs = all_rows_qs.filter(sheet__department_id=department_id)
     
-    # Calculate status based on achievement percentages
-    stats = calculate_rows_statistics(rows_qs)
+    # مكتمل (Completed): Count of submitted activities
+    submitted_count = all_rows_qs.filter(is_submitted=True).count()
     
-    total = stats['total']
+    # قيد التنفيذ (In Progress): Count of draft activities
+    draft_count = all_rows_qs.filter(is_submitted=False).count()
+    
+    # لم يبدأ (Not Started): Non-participating departments
+    # For full dashboard, this is the count of departments with no activities
+    if department_id is None:
+        # Get departments that have any activity (submitted or draft)
+        participating_dept_ids = set(
+            all_rows_qs.exclude(
+                sheet__department__isnull=True
+            ).values_list('sheet__department_id', flat=True).distinct()
+        )
+        
+        # Check if default department has activities
+        has_default_dept_activity = all_rows_qs.filter(
+            sheet__department__isnull=True
+        ).exists()
+        if has_default_dept_activity:
+            participating_dept_ids.add(default_dept.id)
+        
+        # Total active departments
+        total_depts = max(1, Department.objects.filter(is_active=True).count())
+        
+        # Non-participating = not started
+        not_started_count = max(0, total_depts - len(participating_dept_ids))
+    else:
+        # For department-specific view, not_started is 0 (handled in get_department_detail)
+        not_started_count = 0
+    
+    # Total includes submitted + draft + not_started (departments)
+    total = submitted_count + draft_count + not_started_count
     
     items = [
         {
             'label': STATUS_LABELS['completed'],
-            'value': stats['completed'],
+            'value': submitted_count,
             'color': STATUS_COLORS['completed']
         },
         {
             'label': STATUS_LABELS['in_progress'],
-            'value': stats['in_progress'],
+            'value': draft_count,
             'color': STATUS_COLORS['in_progress']
         },
         {
             'label': STATUS_LABELS['not_started'],
-            'value': stats['not_started'],
+            'value': not_started_count,
             'color': STATUS_COLORS['not_started']
         },
     ]
@@ -915,8 +950,12 @@ def get_program_detail(template_id: int, year: int) -> Optional[Dict]:
 def get_department_detail(department_id: int, year: int) -> Optional[Dict]:
     """
     Get detailed statistics for a specific department.
-    Uses actual_achievement_percentage and required_achievement_percentage for calculations.
     Used for DepartmentActivities page.
+    
+    Status Logic (for DEPARTMENT dashboard):
+    - مكتمل (Completed): Activities (rows) with is_submitted=True
+    - قيد التنفيذ (In Progress): Activities (rows) with is_submitted=False (drafts)
+    - لم يبدأ (Not Started): Users who are allowed to submit on active templates but haven't submitted any activity
     
     Args:
         department_id: ID of the Department
@@ -925,39 +964,61 @@ def get_department_detail(department_id: int, year: int) -> Optional[Dict]:
     Returns:
         Dict with department details or None if not found
     """
+    # Import User model here to avoid circular imports
+    from authentication.models import User
+    
     try:
         department = Department.objects.get(id=department_id, is_active=True)
     except Department.DoesNotExist:
         return None
     
-    # Get all SUBMITTED rows for this department's sheets in the given year
-    # Only submitted activities are included - drafts may be deleted
-    # For default department, include sheets with NULL department
+    # Build base query for department
     if department.is_default:
-        rows_qs = ActivitySheetRow.objects.filter(
-            Q(sheet__department=department) | Q(sheet__department__isnull=True),
-            sheet__created_at__year=year,
-            is_submitted=True  # Only submitted activities
-        ).select_related('sheet', 'sheet__template', 'sheet__owner')
+        department_filter = Q(sheet__department=department) | Q(sheet__department__isnull=True)
     else:
-        rows_qs = ActivitySheetRow.objects.filter(
-            sheet__department=department,
-            sheet__created_at__year=year,
-            is_submitted=True  # Only submitted activities
-        ).select_related('sheet', 'sheet__template', 'sheet__owner')
+        department_filter = Q(sheet__department=department)
     
-    # Calculate statistics based on achievement percentages
-    stats = calculate_rows_statistics(rows_qs)
+    # Get ALL rows for this department (both submitted and draft)
+    all_rows_qs = ActivitySheetRow.objects.filter(
+        department_filter,
+        sheet__created_at__year=year
+    ).select_related('sheet', 'sheet__template', 'sheet__owner')
     
-    total_activities = stats['total']
-    completed = stats['completed']
-    in_progress = stats['in_progress']
-    not_started = stats['not_started']
-    completion_rate = stats['completion_rate']
+    # مكتمل (Completed): Count of submitted activities
+    submitted_rows_qs = all_rows_qs.filter(is_submitted=True)
+    submitted_count = submitted_rows_qs.count()
     
-    # For late and cancelled, derive from not_started or add new fields
-    late = 0  # Can be derived from deadline if available
-    cancelled = 0  # Would need a specific status field
+    # قيد التنفيذ (In Progress): Count of draft activities
+    draft_count = all_rows_qs.filter(is_submitted=False).count()
+    
+    # لم يبدأ (Not Started): Users who haven't submitted any activity on active templates
+    # Get active templates (published and active) for this department
+    active_templates = ActivityTemplate.objects.filter(
+        Q(target_department=department) | Q(target_department__isnull=True),
+        status='published',
+        is_deleted=False,
+        is_active_title=True
+    )
+    
+    # Get all active users who should submit activities
+    all_active_users = User.objects.filter(is_active=True)
+    total_users = all_active_users.count()
+    
+    # Get users who have at least one activity (any row, submitted or draft) on any active template
+    users_with_any_activity = set(
+        all_rows_qs.filter(
+            sheet__template__in=active_templates
+        ).values_list('sheet__owner_id', flat=True).distinct()
+    )
+    
+    # Not started = users who haven't submitted any activity
+    not_started_count = max(0, total_users - len(users_with_any_activity))
+    
+    # Cancelled is reserved for future use
+    cancelled_count = 0
+    
+    # Total includes submitted + draft + not_started (users)
+    total_activities = submitted_count + draft_count + not_started_count
     
     # KPIs formatted for frontend
     kpis = [
@@ -973,7 +1034,7 @@ def get_department_detail(department_id: int, year: int) -> Optional[Dict]:
         {
             'title': 'مكتمل',
             'icon': 'bi bi-check-circle',
-            'value': completed,
+            'value': submitted_count,
             'value_label': 'نشاط',
             'trend': 'flat',
             'percentage': 10,
@@ -982,17 +1043,17 @@ def get_department_detail(department_id: int, year: int) -> Optional[Dict]:
         {
             'title': 'قيد التنفيذ',
             'icon': 'bi bi-clock-history',
-            'value': in_progress,
+            'value': draft_count,
             'value_label': 'نشاط',
             'trend': 'flat',
             'percentage': 10,
             'footer_text': 'في هذا الشهر'
         },
         {
-            'title': 'ملغي',
+            'title': 'لم يبدأ',
             'icon': 'bi bi-x-circle',
-            'value': cancelled,
-            'value_label': 'نشاط',
+            'value': not_started_count,
+            'value_label': 'مستخدم',
             'trend': 'flat',
             'percentage': 10,
             'footer_text': 'في هذا الشهر'
@@ -1004,9 +1065,9 @@ def get_department_detail(department_id: int, year: int) -> Optional[Dict]:
         'year': year,
         'total': total_activities,
         'items': [
-            {'label': 'مكتمل', 'value': completed, 'color': STATUS_COLORS['completed']},
-            {'label': 'قيد التنفيذ', 'value': in_progress, 'color': STATUS_COLORS['in_progress']},
-            {'label': 'لم يبدأ', 'value': not_started, 'color': STATUS_COLORS['not_started']}
+            {'label': 'مكتمل', 'value': submitted_count, 'color': STATUS_COLORS['completed']},
+            {'label': 'قيد التنفيذ', 'value': draft_count, 'color': STATUS_COLORS['in_progress']},
+            {'label': 'لم يبدأ', 'value': not_started_count, 'color': STATUS_COLORS['not_started']}
         ]
     }
     
@@ -1015,9 +1076,12 @@ def get_department_detail(department_id: int, year: int) -> Optional[Dict]:
     current_month = timezone.now().month
     weekly_data = []
     
+    # Use submitted rows for weekly trend calculations
+    submitted_rows_list = list(submitted_rows_qs)
+    
     for week in range(1, 5):
         # Get rows for this week (approximate week boundaries)
-        week_rows = [r for r in rows_qs if r.created_at.month == current_month]
+        week_rows = [r for r in submitted_rows_list if r.created_at.month == current_month]
         
         # Calculate average achievement for this portion of rows
         week_sum_actual = 0.0
@@ -1044,9 +1108,9 @@ def get_department_detail(department_id: int, year: int) -> Optional[Dict]:
             'actual': avg_actual
         })
     
-    # Get activities for this department with details
+    # Get activities for this department with details (show all: submitted and draft)
     activities = []
-    for row in rows_qs[:50]:  # Limit for performance
+    for row in all_rows_qs[:50]:  # Limit for performance
         row_data = row.data or {}
         
         # Get activity title from data or use default
@@ -1063,19 +1127,15 @@ def get_department_detail(department_id: int, year: int) -> Optional[Dict]:
         start_date = row_data.get('startDate', row_data.get('start_date', ''))
         end_date = row_data.get('endDate', row_data.get('end_date', ''))
         
-        # Get achievement percentages
+        # Get achievement percentages for completion rate
         actual_pct, required_pct = get_achievement_values(row)
         
-        # Determine status based on achievement percentages
-        calculated_status = get_row_calculated_status(row)
-        
-        # Map status for display
-        status_map = {
-            'completed': 'completed',
-            'in_progress': 'in_progress',
-            'not_started': 'late'  # Treat not_started as late for display
-        }
-        display_status = status_map.get(calculated_status, 'in_progress')
+        # Determine status based on is_submitted flag (new logic)
+        # مكتمل (completed) = submitted, قيد التنفيذ (in_progress) = draft
+        if row.is_submitted:
+            display_status = 'completed'
+        else:
+            display_status = 'in_progress'
         
         # Use actual achievement percentage as completion rate
         row_completion = round(actual_pct)
