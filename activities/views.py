@@ -3285,3 +3285,382 @@ class AttachmentPreviewView(views.APIView):
             'is_image': True,
             'content': file_base64
         })
+
+
+# ============================================================================
+# DASHBOARD API VIEWS
+# ============================================================================
+
+from .dashboard_utils import (
+    get_kpi_summary,
+    get_status_distribution,
+    get_quarterly_data,
+    get_monthly_trend,
+    get_programs_performance,
+    get_full_dashboard_data,
+    get_available_years,
+    get_department_stats,
+    get_program_detail,
+    get_department_detail,
+)
+from .serializers import (
+    DepartmentSerializer,
+    KPISummarySerializer,
+    StatusDistributionSerializer,
+    QuarterlyDataSerializer,
+    MonthlyTrendSerializer,
+    ProgramPerformanceSerializer,
+    FullDashboardSerializer,
+    DepartmentStatsSerializer,
+)
+from .models import Department
+
+
+class DepartmentListView(views.APIView):
+    """
+    GET: List all active departments.
+    """
+    permission_classes = [IsAuthenticated]
+    
+    def get(self, request):
+        """Get list of departments."""
+        departments = Department.objects.filter(is_active=True)
+        serializer = DepartmentSerializer(departments, many=True)
+        return Response(serializer.data)
+
+
+class DashboardSummaryView(views.APIView):
+    """
+    GET: Get KPI summary for dashboard.
+    
+    Query params:
+    - year: Year to calculate for (default: current year)
+    - department_id: Optional department filter
+    """
+    permission_classes = [IsAuthenticated]
+    
+    def get(self, request):
+        """Get KPI summary."""
+        year = int(request.query_params.get('year', timezone.now().year))
+        department_id = request.query_params.get('department_id')
+        
+        if department_id:
+            department_id = int(department_id)
+        
+        data = get_kpi_summary(year, department_id)
+        serializer = KPISummarySerializer(data)
+        return Response(serializer.data)
+
+
+class StatusDistributionView(views.APIView):
+    """
+    GET: Get status distribution for donut chart.
+    
+    Query params:
+    - year: Year to calculate for (default: current year)
+    - department_id: Optional department filter
+    """
+    permission_classes = [IsAuthenticated]
+    
+    def get(self, request):
+        """Get status distribution."""
+        year = int(request.query_params.get('year', timezone.now().year))
+        department_id = request.query_params.get('department_id')
+        
+        if department_id:
+            department_id = int(department_id)
+        
+        data = get_status_distribution(year, department_id)
+        serializer = StatusDistributionSerializer(data)
+        return Response(serializer.data)
+
+
+class QuarterlyDataView(views.APIView):
+    """
+    GET: Get quarterly planned vs actual data for bar chart.
+    
+    Query params:
+    - year: Year to calculate for (default: current year)
+    - department_id: Optional department filter
+    """
+    permission_classes = [IsAuthenticated]
+    
+    def get(self, request):
+        """Get quarterly data."""
+        year = int(request.query_params.get('year', timezone.now().year))
+        department_id = request.query_params.get('department_id')
+        
+        if department_id:
+            department_id = int(department_id)
+        
+        data = get_quarterly_data(year, department_id)
+        serializer = QuarterlyDataSerializer(data)
+        return Response(serializer.data)
+
+
+class MonthlyTrendView(views.APIView):
+    """
+    GET: Get monthly trend data for line chart.
+    
+    Query params:
+    - year: Year to calculate for (default: current year)
+    - department_id: Optional department filter
+    """
+    permission_classes = [IsAuthenticated]
+    
+    def get(self, request):
+        """Get monthly trend."""
+        year = int(request.query_params.get('year', timezone.now().year))
+        department_id = request.query_params.get('department_id')
+        
+        if department_id:
+            department_id = int(department_id)
+        
+        data = get_monthly_trend(year, department_id)
+        serializer = MonthlyTrendSerializer(data)
+        return Response(serializer.data)
+
+
+class ProgramsListView(views.APIView):
+    """
+    GET: Get programs (templates) performance data.
+    
+    Query params:
+    - year: Year to calculate for (default: current year)
+    - department_id: Optional department filter
+    - search: Optional search term
+    """
+    permission_classes = [IsAuthenticated]
+    
+    def get(self, request):
+        """Get programs performance."""
+        year = int(request.query_params.get('year', timezone.now().year))
+        department_id = request.query_params.get('department_id')
+        search = request.query_params.get('search')
+        
+        if department_id:
+            department_id = int(department_id)
+        
+        data = get_programs_performance(year, department_id, search)
+        
+        # Transform to match frontend expected format
+        programs = []
+        for item in data:
+            programs.append({
+                'id': item['id'],
+                'title': item['title'],
+                'description': item['description'],
+                'completionRate': item['completion_rate'],
+                'departmentsCount': item['departments_count'],
+                'activitiesTotal': item['activities_total'],
+                'mode': item['mode'],
+                'detailsLink': item['details_link']
+            })
+        
+        return Response(programs)
+
+
+class AvailableYearsView(views.APIView):
+    """
+    GET: Get list of years with activity data.
+    """
+    permission_classes = [IsAuthenticated]
+    
+    def get(self, request):
+        """Get available years."""
+        years = get_available_years()
+        return Response({'years': years})
+
+
+class FullDashboardView(views.APIView):
+    """
+    GET: Get all dashboard data in a single request.
+    
+    Query params:
+    - year: Year to calculate for (default: current year)
+    - department_id: Optional department filter
+    
+    Returns all dashboard data to minimize API calls from frontend.
+    """
+    permission_classes = [IsAuthenticated]
+    
+    def get(self, request):
+        """Get full dashboard data."""
+        year = int(request.query_params.get('year', timezone.now().year))
+        department_id = request.query_params.get('department_id')
+        
+        if department_id:
+            department_id = int(department_id)
+        
+        data = get_full_dashboard_data(year, department_id)
+        
+        # Transform programs to match frontend expected format
+        programs = []
+        for item in data['programs']:
+            programs.append({
+                'id': item['id'],
+                'title': item['title'],
+                'description': item['description'],
+                'completionRate': item['completion_rate'],
+                'departmentsCount': item['departments_count'],
+                'activitiesTotal': item['activities_total'],
+                'mode': item['mode'],
+                'detailsLink': item['details_link']
+            })
+        
+        # Build response matching frontend structure
+        response_data = {
+            'kpis': data['kpis'],
+            'statusDistribution': data['status_distribution'],
+            'quarterlyData': data['quarterly_data'],
+            'monthlyTrend': data['monthly_trend'],
+            'programs': programs,
+            'availableYears': data['available_years'],
+        }
+        
+        return Response(response_data)
+
+
+class DepartmentStatsView(views.APIView):
+    """
+    GET: Get statistics for all departments (admin only).
+    
+    Query params:
+    - year: Year to calculate for (default: current year)
+    """
+    permission_classes = [IsAuthenticated]
+    
+    def get(self, request):
+        """Get department statistics."""
+        # Only admins can view all department stats
+        if not is_admin_user(request.user):
+            return Response(
+                {'error': 'صلاحية الوصول مطلوبة'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        year = int(request.query_params.get('year', timezone.now().year))
+        data = get_department_stats(year)
+        serializer = DepartmentStatsSerializer(data, many=True)
+        return Response(serializer.data)
+
+
+class ProgramDetailView(views.APIView):
+    """
+    GET: Get detailed statistics for a specific program (template).
+    
+    URL params:
+    - template_id: ID of the ActivityTemplate
+    
+    Query params:
+    - year: Year to calculate for (default: current year)
+    """
+    permission_classes = [IsAuthenticated]
+    
+    def get(self, request, template_id):
+        """Get program detail statistics."""
+        year = int(request.query_params.get('year', timezone.now().year))
+        
+        data = get_program_detail(template_id, year)
+        
+        if data is None:
+            return Response(
+                {'error': 'البرنامج غير موجود'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        
+        # Transform to camelCase for frontend compatibility
+        response_data = {
+            'id': data['id'],
+            'title': data['title'],
+            'description': data['description'],
+            'kpis': [
+                {
+                    'title': kpi['title'],
+                    'icon': kpi['icon'],
+                    'value': kpi['value'],
+                    'valueLabel': kpi['value_label'],
+                    'trend': kpi['trend'],
+                    'percentage': kpi['percentage'],
+                    'footerText': kpi['footer_text']
+                }
+                for kpi in data['kpis']
+            ],
+            'overall': {
+                'percentage': data['overall']['percentage'],
+                'completed': data['overall']['completed'],
+                'total': data['overall']['total'],
+                'departmentsCount': data['overall']['departments_count']
+            },
+            'barChartData': data['bar_chart_data'],
+            'departmentStats': [
+                {
+                    'departmentId': dept['department_id'],
+                    'title': dept['title'],
+                    'completionRate': dept['completion_rate'],
+                    'totalActivities': dept['total_activities'],
+                    'icon': dept['icon'],
+                    'buckets': dept['buckets']
+                }
+                for dept in data['department_stats']
+            ],
+            'availableYears': data['available_years']
+        }
+        
+        return Response(response_data)
+
+
+class DepartmentDetailView(views.APIView):
+    """
+    GET: Get detailed statistics for a specific department.
+    
+    URL params:
+    - department_id: ID of the Department
+    
+    Query params:
+    - year: Year to calculate for (default: current year)
+    """
+    permission_classes = [IsAuthenticated]
+    
+    def get(self, request, department_id):
+        """Get department detail statistics."""
+        year = int(request.query_params.get('year', timezone.now().year))
+        
+        data = get_department_detail(department_id, year)
+        
+        if data is None:
+            return Response(
+                {'error': 'القسم غير موجود'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        
+        # Transform to camelCase for frontend compatibility
+        response_data = {
+            'id': data['id'],
+            'name': data['name'],
+            'code': data['code'],
+            'description': data['description'],
+            'kpis': [
+                {
+                    'title': kpi['title'],
+                    'icon': kpi['icon'],
+                    'value': kpi['value'],
+                    'valueLabel': kpi['value_label'],
+                    'trend': kpi['trend'],
+                    'percentage': kpi['percentage'],
+                    'footerText': kpi['footer_text']
+                }
+                for kpi in data['kpis']
+            ],
+            'statusDistribution': data['status_distribution'],
+            'weeklyTrend': {
+                'weeks': data['weekly_trend']['weeks'],
+                'planned': data['weekly_trend']['planned'],
+                'actual': data['weekly_trend']['actual']
+            },
+            'activities': data['activities'],
+            'totalActivities': data['total_activities'],
+            'availableYears': data['available_years']
+        }
+        
+        return Response(response_data)

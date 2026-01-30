@@ -3,6 +3,7 @@
 Models for the Dynamic Activities Template System.
 
 Architecture:
+- Department: Organizational units (Phase 1: single default department)
 - ActivityColumnDefinition: Global column definitions (admin-managed)
 - ActivityColumnValidation: Validation rules per column
 - ActivityTemplate: User templates (draft/published/archived)
@@ -14,6 +15,80 @@ Architecture:
 from django.db import models
 from django.conf import settings
 from django.utils import timezone
+
+
+# ============================================================================
+# Department Model (Phase 1: Single Default Department)
+# ============================================================================
+
+class Department(models.Model):
+    """
+    Organizational department for grouping activities.
+    
+    Phase 1: A single default department "القسم العام" contains all users.
+    Future phases will support multiple departments with hierarchy.
+    """
+    
+    name = models.CharField(
+        max_length=255,
+        help_text="Department name (e.g., 'القسم العام')"
+    )
+    code = models.CharField(
+        max_length=50,
+        unique=True,
+        help_text="Unique department code (e.g., 'ALL', 'HR', 'IT')"
+    )
+    description = models.TextField(
+        blank=True,
+        help_text="Optional department description"
+    )
+    is_default = models.BooleanField(
+        default=False,
+        help_text="True = default department for all users. Only one can be default."
+    )
+    is_active = models.BooleanField(
+        default=True,
+        help_text="Soft delete flag"
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    
+    class Meta:
+        ordering = ['-is_default', 'name']
+        verbose_name = 'Department'
+        verbose_name_plural = 'Departments'
+    
+    def __str__(self):
+        return self.name
+    
+    @classmethod
+    def get_default_department(cls):
+        """
+        Get or create the default department.
+        Returns the department with is_default=True.
+        """
+        department, created = cls.objects.get_or_create(
+            is_default=True,
+            defaults={
+                'name': 'القسم العام',
+                'code': 'ALL',
+                'description': 'القسم الافتراضي الذي يشمل جميع المستخدمين'
+            }
+        )
+        return department
+    
+    def save(self, *args, **kwargs):
+        """Ensure only one default department exists."""
+        if self.is_default:
+            # Remove default flag from other departments
+            Department.objects.filter(is_default=True).exclude(pk=self.pk).update(is_default=False)
+        super().save(*args, **kwargs)
+    
+    def can_delete(self):
+        """Check if department can be deleted (not default, not used)"""
+        if self.is_default:
+            return False
+        return not self.sheets.exists() and not self.templates.exists()
 
 
 class ActivityColumnDefinition(models.Model):
@@ -190,6 +265,16 @@ class ActivityTemplate(models.Model):
         null=True
     )
     
+    # Department targeting (Phase 1: always default department)
+    target_department = models.ForeignKey(
+        'Department',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='templates',
+        help_text="Target department for this template. NULL = all departments (legacy)"
+    )
+    
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     published_at = models.DateTimeField(null=True, blank=True)
@@ -295,6 +380,16 @@ class ActivitySheet(models.Model):
         related_name='activity_sheets'
     )
     
+    # Department ownership (Phase 1: always default department)
+    department = models.ForeignKey(
+        'Department',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='sheets',
+        help_text="Department that owns this sheet. NULL = default department (legacy)"
+    )
+    
     is_active = models.BooleanField(default=True)
     row_count = models.PositiveIntegerField(
         default=0,
@@ -369,6 +464,19 @@ class ActivitySheetRow(models.Model):
         help_text="Cell styles: {column_key: {bold, italic, backgroundColor, textColor}}"
     )
     height = models.PositiveIntegerField(default=32)
+    
+    # Activity status for KPI tracking
+    ACTIVITY_STATUS_CHOICES = [
+        ('not_started', 'لم يبدأ'),
+        ('in_progress', 'قيد التنفيذ'),
+        ('completed', 'مكتمل'),
+    ]
+    activity_status = models.CharField(
+        max_length=20,
+        choices=ACTIVITY_STATUS_CHOICES,
+        default='not_started',
+        help_text="Status of this activity for KPI calculations"
+    )
     
     # Per-activity submission status - each activity can be submitted individually
     is_submitted = models.BooleanField(

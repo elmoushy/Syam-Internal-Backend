@@ -1089,3 +1089,190 @@ class ActivityRowAttachmentCreateSerializer(serializers.Serializer):
         )
         
         return attachment
+
+
+# ============================================================================
+# Dashboard Serializers
+# ============================================================================
+
+from .models import Department
+
+
+class DepartmentSerializer(serializers.ModelSerializer):
+    """Serializer for Department model"""
+    
+    class Meta:
+        model = Department
+        fields = [
+            'id', 'name', 'code', 'description',
+            'is_default', 'is_active',
+            'created_at', 'updated_at'
+        ]
+        read_only_fields = ['id', 'created_at', 'updated_at']
+
+
+class KPICardSerializer(serializers.Serializer):
+    """Serializer for individual KPI card data - matches frontend StatKpiCard props"""
+    
+    title = serializers.CharField()
+    icon = serializers.CharField()
+    value = serializers.CharField()  # Can be number or string like "78%"
+    value_label = serializers.CharField(source='valueLabel', allow_blank=True)
+    trend = serializers.ChoiceField(choices=['up', 'down', 'flat'])
+    percentage = serializers.IntegerField()
+    footer_text = serializers.CharField(source='footerText')
+
+
+class KPISummarySerializer(serializers.Serializer):
+    """Serializer for dashboard KPI summary"""
+    
+    total_activities = serializers.IntegerField()
+    participating_departments = serializers.IntegerField()
+    non_participating_departments = serializers.IntegerField()
+    overall_completion_rate = serializers.FloatField()
+    trend = serializers.ChoiceField(choices=['up', 'down', 'flat'])
+    change_percentage = serializers.IntegerField()
+    current_month_activities = serializers.IntegerField()
+
+
+class StatusItemSerializer(serializers.Serializer):
+    """Serializer for status distribution item"""
+    
+    label = serializers.CharField()
+    value = serializers.IntegerField()
+    color = serializers.CharField()
+
+
+class StatusDistributionSerializer(serializers.Serializer):
+    """Serializer for status distribution (donut chart)"""
+    
+    year = serializers.IntegerField()
+    total = serializers.IntegerField()
+    items = StatusItemSerializer(many=True)
+
+
+class QuarterDataSerializer(serializers.Serializer):
+    """Serializer for quarter data item"""
+    
+    label = serializers.CharField()
+    planned = serializers.IntegerField()
+    actual = serializers.IntegerField()
+
+
+class QuarterlyDataSerializer(serializers.Serializer):
+    """Serializer for quarterly data (bar chart)"""
+    
+    year = serializers.IntegerField()
+    quarters = QuarterDataSerializer(many=True)
+
+
+class MonthlyTrendSerializer(serializers.Serializer):
+    """Serializer for monthly trend (line chart)"""
+    
+    year = serializers.IntegerField()
+    months = serializers.ListField(child=serializers.CharField())
+    planned = serializers.ListField(child=serializers.IntegerField())
+    actual = serializers.ListField(child=serializers.IntegerField())
+
+
+class ProgramPerformanceSerializer(serializers.Serializer):
+    """Serializer for program/template performance - matches frontend ProgramPerformanceCard props"""
+    
+    id = serializers.IntegerField()
+    title = serializers.CharField()
+    description = serializers.CharField(allow_blank=True)
+    completion_rate = serializers.IntegerField(source='completionRate')
+    departments_count = serializers.IntegerField(source='departmentsCount')
+    activities_total = serializers.IntegerField(source='activitiesTotal')
+    mode = serializers.ChoiceField(choices=['gold', 'danger'])
+    details_link = serializers.CharField(source='detailsLink')
+
+
+class FullDashboardSerializer(serializers.Serializer):
+    """Serializer for full dashboard data"""
+    
+    kpis = KPISummarySerializer()
+    status_distribution = StatusDistributionSerializer()
+    quarterly_data = QuarterlyDataSerializer()
+    monthly_trend = MonthlyTrendSerializer()
+    programs = ProgramPerformanceSerializer(many=True)
+    available_years = serializers.ListField(child=serializers.IntegerField())
+
+
+class DepartmentStatsSerializer(serializers.Serializer):
+    """Serializer for department statistics"""
+    
+    department_id = serializers.IntegerField()
+    department_name = serializers.CharField()
+    department_code = serializers.CharField()
+    total_activities = serializers.IntegerField()
+    participating_departments = serializers.IntegerField()
+    non_participating_departments = serializers.IntegerField()
+    overall_completion_rate = serializers.FloatField()
+    trend = serializers.ChoiceField(choices=['up', 'down', 'flat'])
+    change_percentage = serializers.IntegerField()
+
+
+# ============================================================================
+# Program Detail Serializers (for ProgramDetails page)
+# ============================================================================
+
+class ProgramKPISerializer(serializers.Serializer):
+    """Serializer for program detail KPI cards"""
+    
+    title = serializers.CharField()
+    icon = serializers.CharField()
+    value = serializers.IntegerField()
+    value_label = serializers.CharField(source='valueLabel')
+    trend = serializers.ChoiceField(choices=['up', 'down', 'flat'])
+    percentage = serializers.IntegerField()
+    footer_text = serializers.CharField(source='footerText')
+
+
+class ProgramOverallSerializer(serializers.Serializer):
+    """Serializer for overall completion card"""
+    
+    percentage = serializers.IntegerField()
+    completed = serializers.IntegerField()
+    total = serializers.IntegerField()
+    departments_count = serializers.IntegerField(source='departmentsCount')
+
+
+class BucketItemSerializer(serializers.Serializer):
+    """Serializer for bucket items in department stats"""
+    
+    label = serializers.CharField()
+    count = serializers.IntegerField()
+
+
+class DepartmentBucketsSerializer(serializers.Serializer):
+    """Serializer for department status buckets"""
+    
+    cancelled = BucketItemSerializer()
+    late = BucketItemSerializer()
+    in_progress = BucketItemSerializer()
+    completed = BucketItemSerializer()
+
+
+class ProgramDepartmentStatSerializer(serializers.Serializer):
+    """Serializer for department stats in program detail"""
+    
+    department_id = serializers.IntegerField(source='departmentId')
+    title = serializers.CharField()
+    completion_rate = serializers.IntegerField(source='completionRate')
+    total_activities = serializers.IntegerField(source='totalActivities')
+    icon = serializers.CharField()
+    buckets = DepartmentBucketsSerializer()
+
+
+class ProgramDetailSerializer(serializers.Serializer):
+    """Serializer for full program detail data"""
+    
+    id = serializers.IntegerField()
+    title = serializers.CharField()
+    description = serializers.CharField(allow_blank=True)
+    kpis = ProgramKPISerializer(many=True)
+    overall = ProgramOverallSerializer()
+    bar_chart_data = serializers.DictField(source='barChartData')
+    department_stats = ProgramDepartmentStatSerializer(many=True, source='departmentStats')
+    available_years = serializers.ListField(child=serializers.IntegerField(), source='availableYears')

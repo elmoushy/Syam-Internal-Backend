@@ -106,4 +106,30 @@ urlpatterns = [
     path('attachments/<int:attachment_id>/download/', views.AttachmentDownloadView.as_view(), name='attachment-download'),
     # Preview image attachment (returns base64 for images only)
     path('attachments/<int:attachment_id>/preview/', views.AttachmentPreviewView.as_view(), name='attachment-preview'),
+    
+    # ============================================================================
+    # DASHBOARD API - KPIs and Analytics
+    # ============================================================================
+    # List departments
+    path('dashboard/departments/', views.DepartmentListView.as_view(), name='dashboard-departments'),
+    # KPI Summary
+    path('dashboard/summary/', views.DashboardSummaryView.as_view(), name='dashboard-summary'),
+    # Status Distribution (Donut Chart)
+    path('dashboard/status-distribution/', views.StatusDistributionView.as_view(), name='dashboard-status-distribution'),
+    # Quarterly Data (Bar Chart)
+    path('dashboard/quarterly/', views.QuarterlyDataView.as_view(), name='dashboard-quarterly'),
+    # Monthly Trend (Line Chart)
+    path('dashboard/monthly-trend/', views.MonthlyTrendView.as_view(), name='dashboard-monthly-trend'),
+    # Programs/Templates Performance
+    path('dashboard/programs/', views.ProgramsListView.as_view(), name='dashboard-programs'),
+    # Available Years
+    path('dashboard/years/', views.AvailableYearsView.as_view(), name='dashboard-years'),
+    # Full Dashboard Data (all in one)
+    path('dashboard/full/', views.FullDashboardView.as_view(), name='dashboard-full'),
+    # Department Statistics (admin only)
+    path('dashboard/department-stats/', views.DepartmentStatsView.as_view(), name='dashboard-department-stats'),
+    # Department Detail (for DepartmentActivities page)
+    path('dashboard/departments/<int:department_id>/', views.DepartmentDetailView.as_view(), name='dashboard-department-detail'),
+    # Program Detail (for ProgramDetails page)
+    path('dashboard/programs/<int:template_id>/', views.ProgramDetailView.as_view(), name='dashboard-program-detail'),
 ]
