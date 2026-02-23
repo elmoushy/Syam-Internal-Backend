@@ -18,6 +18,7 @@ from django.contrib import admin
 from django.urls import path, include
 from django.http import JsonResponse
 from django.conf import settings
+from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView, SpectacularRedocView
 
 
 def api_root(request):
@@ -37,7 +38,10 @@ def api_root(request):
             'internal_chat': '/api/internal-chat/',
             'admin': '/admin/',
             'audit': '/api/audit/',
-            'api_docs': '/api/' if settings.DEBUG else None,
+            'activities': '/api/activities/',
+            'api_docs': '/api/schema/' if settings.DEBUG else None,
+            'swagger_ui': '/api/docs/' if settings.DEBUG else None,
+            'redoc': '/api/redoc/' if settings.DEBUG else None,
         },
         'status': 'online'
     })
@@ -77,6 +81,19 @@ urlpatterns = [
     # path('api/weapons/', include('weapons.urls')),
     # path('api/inventory/', include('inventory.urls')),
 ]
+
+# =============================================================================
+# OpenAPI/Swagger Documentation (Development only)
+# =============================================================================
+if settings.DEBUG:
+    urlpatterns += [
+        # OpenAPI 3.0 schema
+        path('api/schema/', SpectacularAPIView.as_view(), name='schema'),
+        # Swagger UI
+        path('api/docs/', SpectacularSwaggerView.as_view(url_name='schema'), name='swagger-ui'),
+        # ReDoc UI
+        path('api/redoc/', SpectacularRedocView.as_view(url_name='schema'), name='redoc'),
+    ]
 
 # Note: API docs disabled due to coreapi compatibility issues with Python 3.13
 # You can use the DRF browsable API by visiting the endpoints directly

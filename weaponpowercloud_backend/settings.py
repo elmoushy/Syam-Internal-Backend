@@ -78,6 +78,7 @@ INSTALLED_APPS = [
     'django.contrib.staticfiles',
     'rest_framework',
     'rest_framework_simplejwt',
+    'drf_spectacular',  # OpenAPI 3.0 schema generation
     'corsheaders',
     'django_extensions',
     "django_filters",
@@ -246,6 +247,7 @@ REST_FRAMEWORK = {
     ],
     'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
     'PAGE_SIZE': 20,  # Default page size for cards news
+    'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema',  # OpenAPI 3.0 schema
 }
 
 # JWT Token Configuration
@@ -619,5 +621,35 @@ INTERNAL_CHAT_ALLOWED_CONTENT_TYPES = [
 
 # Rate limiting for chat messages (API level)
 INTERNAL_CHAT_MESSAGE_RATE_LIMIT = os.getenv('INTERNAL_CHAT_MESSAGE_RATE_LIMIT', '60/minute')
+
+# =============================================================================
+# DRF Spectacular Configuration (OpenAPI/Swagger)
+# =============================================================================
+SPECTACULAR_SETTINGS = {
+    'TITLE': 'WeaponPowerCloud API',
+    'DESCRIPTION': 'API documentation for WeaponPowerCloud Activities System',
+    'VERSION': '1.0.0',
+    'SERVE_INCLUDE_SCHEMA': False,
+    'SCHEMA_PATH_PREFIX': r'/api',
+    'COMPONENT_SPLIT_REQUEST': True,
+    'SWAGGER_UI_SETTINGS': {
+        'deepLinking': True,
+        'persistAuthorization': True,
+        'displayOperationId': True,
+    },
+    # Custom authentication handling
+    'AUTHENTICATION_WHITELIST': [
+        'rest_framework.authentication.SessionAuthentication',
+        'rest_framework.authentication.BasicAuthentication',
+        'rest_framework_simplejwt.authentication.JWTAuthentication',
+    ],
+    # Handle custom renderers that might not have format attribute
+    'POSTPROCESSING_HOOKS': ['drf_spectacular.hooks.postprocess_schema_enums'],
+    # Define default renderer format
+    'DEFAULT_GENERATOR_CLASS': 'drf_spectacular.generators.SchemaGenerator',
+}
+
+# Public API Base URL for OpenAPI schema
+PUBLIC_API_BASE_URL = os.getenv('PUBLIC_API_BASE_URL', 'http://localhost:8000')
 
 

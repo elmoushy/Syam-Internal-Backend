@@ -1,0 +1,1395 @@
+openapi: 3.0.3
+info:
+  title: Activities API
+  description: API for Dynamic Activities Template System
+  version: 1.0.0
+  contact:
+    name: WeaponPowerCloud Team
+
+servers:
+  - url: /api
+    description: Backend API
+
+tags:
+  - name: Authentication
+    description: User authentication endpoints
+  - name: Manage Templates
+    description: Admin endpoints for template management
+  - name: Activities
+    description: User endpoints for activities CRUD
+  - name: Dashboard
+    description: KPIs and analytics endpoints
+
+paths:
+  # ============================================================================
+  # AUTHENTICATION
+  # ============================================================================
+  /auth/login/:
+    post:
+      tags:
+        - Authentication
+      summary: User Login
+      description: Authenticate user and get JWT tokens
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - email
+                - password
+              properties:
+                email:
+                  type: string
+                  format: email
+                  example: user@example.com
+                password:
+                  type: string
+                  format: password
+                  example: password123
+      responses:
+        '200':
+          description: Login successful
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  access:
+                    type: string
+                    description: JWT access token
+                  refresh:
+                    type: string
+                    description: JWT refresh token
+                  user:
+                    $ref: '#/components/schemas/User'
+        '401':
+          description: Invalid credentials
+
+  /auth/token/refresh/:
+    post:
+      tags:
+        - Authentication
+      summary: Refresh Token
+      description: Get new access token using refresh token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - refresh
+              properties:
+                refresh:
+                  type: string
+      responses:
+        '200':
+          description: Token refreshed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  access:
+                    type: string
+
+  # ============================================================================
+  # MANAGE TEMPLATES (Admin)
+  # ============================================================================
+  /activities/templates/:
+    get:
+      tags:
+        - Manage Templates
+      summary: List Templates
+      description: Get all templates (admin view)
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [draft, published, archived]
+        - name: search
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: List of templates
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/TemplateListItem'
+
+    post:
+      tags:
+        - Manage Templates
+      summary: Create Template
+      description: Create new activity template
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TemplateCreate'
+      responses:
+        '201':
+          description: Template created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Template'
+
+  /activities/templates/{id}/:
+    get:
+      tags:
+        - Manage Templates
+      summary: Get Template Detail
+      description: Get template with columns
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Template detail
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Template'
+
+    patch:
+      tags:
+        - Manage Templates
+      summary: Update Template
+      description: Update template properties
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TemplateUpdate'
+      responses:
+        '200':
+          description: Template updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Template'
+
+    delete:
+      tags:
+        - Manage Templates
+      summary: Delete Template
+      description: Archive/delete template
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '204':
+          description: Template deleted
+
+  /activities/templates/{id}/publish/:
+    post:
+      tags:
+        - Manage Templates
+      summary: Publish Template
+      description: Change template status from draft to published
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Template published
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Template'
+
+  /activities/templates/{id}/columns/:
+    get:
+      tags:
+        - Manage Templates
+      summary: Get Template Columns
+      description: Get columns configured for template
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Template columns
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/TemplateColumn'
+
+    put:
+      tags:
+        - Manage Templates
+      summary: Set Template Columns
+      description: Replace all columns for template (draft only)
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                columns:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/ColumnCreate'
+      responses:
+        '200':
+          description: Columns updated
+
+  /activities/columns/:
+    get:
+      tags:
+        - Manage Templates
+      summary: List Column Definitions
+      description: Get all available column definitions
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: List of columns
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ColumnDefinition'
+
+  /activities/columns/detect-from-excel/:
+    post:
+      tags:
+        - Manage Templates
+      summary: Detect Columns from Excel
+      description: Upload Excel file to auto-detect columns
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file:
+                  type: string
+                  format: binary
+      responses:
+        '200':
+          description: Detected columns
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  columns:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        name:
+                          type: string
+                        type:
+                          type: string
+                        width:
+                          type: integer
+
+  /activities/titles/{id}/set-active/:
+    post:
+      tags:
+        - Manage Templates
+      summary: Set Active Title
+      description: Mark template as active for users
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Template activated
+
+  /activities/titles/{id}/deactivate/:
+    post:
+      tags:
+        - Manage Templates
+      summary: Deactivate Title
+      description: Remove active status from template
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Template deactivated
+
+  /activities/admin/templates/{template_id}/users/:
+    get:
+      tags:
+        - Manage Templates
+      summary: Get Template Users
+      description: Get users with submission counts for template
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: template_id
+          in: path
+          required: true
+          schema:
+            type: integer
+        - name: search
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Users list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminTemplateUsersResponse'
+
+  /activities/admin/templates/{template_id}/activities/:
+    get:
+      tags:
+        - Manage Templates
+      summary: Get Template Activities
+      description: Get all submitted activities for template
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: template_id
+          in: path
+          required: true
+          schema:
+            type: integer
+        - name: user_id
+          in: query
+          schema:
+            type: integer
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [submitted, draft, all]
+        - name: search
+          in: query
+          schema:
+            type: string
+        - name: page
+          in: query
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Activities list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminTemplateActivitiesResponse'
+
+  /activities/admin/templates/{template_id}/activities/export/:
+    get:
+      tags:
+        - Manage Templates
+      summary: Export Activities
+      description: Export all activities to Excel format
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: template_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Export data
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  activities:
+                    type: array
+                    items:
+                      type: object
+
+  # ============================================================================
+  # ACTIVITIES (User)
+  # ============================================================================
+  /activities/titles/:
+    get:
+      tags:
+        - Activities
+      summary: List Published Titles
+      description: Get published templates for user selection
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Published templates
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/TitleItem'
+
+  /activities/user/activity-page/:
+    get:
+      tags:
+        - Activities
+      summary: Get Activity Page Data
+      description: Get active title with user's sheet data
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Activity page data
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserActivityPageResponse'
+
+  /activities/titles/{title_id}/columns/:
+    get:
+      tags:
+        - Activities
+      summary: Get Title Columns
+      description: Get columns for a specific title
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: title_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Title columns
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/TitleColumn'
+
+  /activities/user/templates/{template_id}/activities/:
+    get:
+      tags:
+        - Activities
+      summary: List User Activities
+      description: Get user's activities for a template
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: template_id
+          in: path
+          required: true
+          schema:
+            type: integer
+        - name: page
+          in: query
+          schema:
+            type: integer
+        - name: page_size
+          in: query
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: User activities
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserActivitiesListResponse'
+
+    post:
+      tags:
+        - Activities
+      summary: Create Activity
+      description: Create new activity for template
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: template_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ActivityCreate'
+      responses:
+        '201':
+          description: Activity created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserActivity'
+
+  /activities/user/activities/{activity_id}/:
+    get:
+      tags:
+        - Activities
+      summary: Get Activity Detail
+      description: Get single activity with all data
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: activity_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Activity detail
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserActivityDetailResponse'
+
+    patch:
+      tags:
+        - Activities
+      summary: Update Activity
+      description: Update activity data
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: activity_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ActivityUpdate'
+      responses:
+        '200':
+          description: Activity updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserActivity'
+
+    delete:
+      tags:
+        - Activities
+      summary: Delete Activity
+      description: Delete user's activity
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: activity_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '204':
+          description: Activity deleted
+
+  /activities/user/activities/{activity_id}/submit/:
+    post:
+      tags:
+        - Activities
+      summary: Submit Activity
+      description: Submit activity to admin
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: activity_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Activity submitted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserActivity'
+
+  /activities/user/templates/{template_id}/submit/:
+    post:
+      tags:
+        - Activities
+      summary: Submit All Activities
+      description: Bulk submit all draft activities for template
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: template_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Activities submitted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  submitted_count:
+                    type: integer
+
+  /activities/rows/{row_id}/attachments/:
+    get:
+      tags:
+        - Activities
+      summary: List Attachments
+      description: Get attachments for activity row
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: row_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Attachments list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Attachment'
+
+    post:
+      tags:
+        - Activities
+      summary: Upload Attachment
+      description: Upload file attachment for activity
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: row_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file:
+                  type: string
+                  format: binary
+                column_key:
+                  type: string
+      responses:
+        '201':
+          description: Attachment uploaded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Attachment'
+
+  /activities/attachments/{attachment_id}/download/:
+    get:
+      tags:
+        - Activities
+      summary: Download Attachment
+      description: Download attachment file
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: attachment_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: File content (base64)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  content:
+                    type: string
+                  filename:
+                    type: string
+                  mime_type:
+                    type: string
+
+  /activities/attachments/{attachment_id}/preview/:
+    get:
+      tags:
+        - Activities
+      summary: Preview Attachment
+      description: Preview image attachment
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: attachment_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Image preview (base64)
+
+  # ============================================================================
+  # DASHBOARD
+  # ============================================================================
+  /activities/dashboard/full/:
+    get:
+      tags:
+        - Dashboard
+      summary: Get Full Dashboard
+      description: Get all dashboard data in one request
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: year
+          in: query
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Full dashboard data
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FullDashboardResponse'
+
+  /activities/dashboard/summary/:
+    get:
+      tags:
+        - Dashboard
+      summary: Get KPI Summary
+      description: Get KPI cards data
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: year
+          in: query
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: KPI summary
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KPISummary'
+
+  /activities/dashboard/programs/:
+    get:
+      tags:
+        - Dashboard
+      summary: List Programs
+      description: Get programs/templates performance
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: year
+          in: query
+          schema:
+            type: integer
+        - name: search
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Programs list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ProgramPerformance'
+
+  /activities/dashboard/programs/{template_id}/:
+    get:
+      tags:
+        - Dashboard
+      summary: Get Program Detail
+      description: Get detailed KPIs for a program/template
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: template_id
+          in: path
+          required: true
+          schema:
+            type: integer
+        - name: year
+          in: query
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Program detail
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProgramDetailResponse'
+
+  /activities/dashboard/departments/{department_id}/:
+    get:
+      tags:
+        - Dashboard
+      summary: Get Department Detail
+      description: Get department activities and KPIs
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: department_id
+          in: path
+          required: true
+          schema:
+            type: integer
+        - name: year
+          in: query
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Department detail
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DepartmentDetailResponse'
+
+  /activities/dashboard/years/:
+    get:
+      tags:
+        - Dashboard
+      summary: Get Available Years
+      description: Get list of years with data
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Years list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: integer
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    User:
+      type: object
+      properties:
+        id:
+          type: integer
+        email:
+          type: string
+        full_name:
+          type: string
+        role:
+          type: string
+
+    ColumnDefinition:
+      type: object
+      properties:
+        id:
+          type: integer
+        key:
+          type: string
+        label:
+          type: string
+        data_type:
+          type: string
+          enum: [text, number, date, email, tel, boolean, select]
+        options:
+          type: array
+          items:
+            type: string
+        allows_attachment:
+          type: boolean
+        is_system:
+          type: boolean
+
+    ColumnCreate:
+      type: object
+      required:
+        - label
+        - data_type
+      properties:
+        label:
+          type: string
+        data_type:
+          type: string
+        options:
+          type: array
+          items:
+            type: string
+
+    TemplateListItem:
+      type: object
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        description:
+          type: string
+        status:
+          type: string
+        is_active_title:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+
+    Template:
+      type: object
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        description:
+          type: string
+        notes:
+          type: string
+        status:
+          type: string
+        is_active_title:
+          type: boolean
+        columns:
+          type: array
+          items:
+            $ref: '#/components/schemas/TemplateColumn'
+
+    TemplateCreate:
+      type: object
+      required:
+        - name
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        notes:
+          type: string
+
+    TemplateUpdate:
+      type: object
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        notes:
+          type: string
+        is_active_title:
+          type: boolean
+
+    TemplateColumn:
+      type: object
+      properties:
+        id:
+          type: integer
+        key:
+          type: string
+        label:
+          type: string
+        data_type:
+          type: string
+        order:
+          type: integer
+        is_required:
+          type: boolean
+        options:
+          type: array
+          items:
+            type: string
+
+    TitleItem:
+      type: object
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        description:
+          type: string
+        is_active_title:
+          type: boolean
+        is_deleted:
+          type: boolean
+
+    TitleColumn:
+      type: object
+      properties:
+        id:
+          type: integer
+        key:
+          type: string
+        label:
+          type: string
+        data_type:
+          type: string
+        order:
+          type: integer
+        is_required:
+          type: boolean
+        options:
+          type: array
+          items:
+            type: string
+        allows_attachment:
+          type: boolean
+
+    UserActivity:
+      type: object
+      properties:
+        id:
+          type: integer
+        data:
+          type: object
+          additionalProperties:
+            type: string
+        activity_status:
+          type: string
+          enum: [not_started, in_progress, completed]
+        is_submitted:
+          type: boolean
+        submitted_at:
+          type: string
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+
+    ActivityCreate:
+      type: object
+      required:
+        - data
+      properties:
+        data:
+          type: object
+          additionalProperties:
+            type: string
+        activity_status:
+          type: string
+
+    ActivityUpdate:
+      type: object
+      properties:
+        data:
+          type: object
+          additionalProperties:
+            type: string
+        activity_status:
+          type: string
+
+    UserActivityPageResponse:
+      type: object
+      properties:
+        active_title:
+          $ref: '#/components/schemas/TitleItem'
+        columns:
+          type: array
+          items:
+            $ref: '#/components/schemas/TitleColumn'
+        sheet:
+          type: object
+        activities:
+          type: array
+          items:
+            $ref: '#/components/schemas/UserActivity'
+
+    UserActivitiesListResponse:
+      type: object
+      properties:
+        template:
+          type: object
+          properties:
+            id:
+              type: integer
+            name:
+              type: string
+            is_active_title:
+              type: boolean
+        sheet:
+          type: object
+        columns:
+          type: array
+          items:
+            $ref: '#/components/schemas/TitleColumn'
+        activities:
+          type: array
+          items:
+            $ref: '#/components/schemas/UserActivity'
+        pagination:
+          $ref: '#/components/schemas/Pagination'
+
+    UserActivityDetailResponse:
+      type: object
+      properties:
+        id:
+          type: integer
+        data:
+          type: object
+        columns:
+          type: array
+          items:
+            $ref: '#/components/schemas/TitleColumn'
+        attachments:
+          type: object
+        is_submitted:
+          type: boolean
+
+    AdminTemplateUsersResponse:
+      type: object
+      properties:
+        template:
+          type: object
+        users:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: integer
+              full_name:
+                type: string
+              email:
+                type: string
+              activities_count:
+                type: integer
+              submitted_count:
+                type: integer
+
+    AdminTemplateActivitiesResponse:
+      type: object
+      properties:
+        template:
+          type: object
+        columns:
+          type: array
+          items:
+            $ref: '#/components/schemas/TitleColumn'
+        users:
+          type: array
+          items:
+            type: object
+        activities:
+          type: array
+          items:
+            type: object
+        pagination:
+          $ref: '#/components/schemas/Pagination'
+
+    Attachment:
+      type: object
+      properties:
+        id:
+          type: integer
+        column_key:
+          type: string
+        original_filename:
+          type: string
+        file_size:
+          type: integer
+        mime_type:
+          type: string
+        is_image:
+          type: boolean
+        download_url:
+          type: string
+
+    Pagination:
+      type: object
+      properties:
+        page:
+          type: integer
+        page_size:
+          type: integer
+        total_count:
+          type: integer
+        total_pages:
+          type: integer
+        has_next:
+          type: boolean
+        has_prev:
+          type: boolean
+
+    KPISummary:
+      type: object
+      properties:
+        total_activities:
+          type: integer
+        completed:
+          type: integer
+        in_progress:
+          type: integer
+        not_started:
+          type: integer
+        completion_rate:
+          type: number
+
+    ProgramPerformance:
+      type: object
+      properties:
+        id:
+          type: integer
+        title:
+          type: string
+        description:
+          type: string
+        completion:
+          type: number
+        total:
+          type: integer
+        completed:
+          type: integer
+
+    FullDashboardResponse:
+      type: object
+      properties:
+        availableYears:
+          type: array
+          items:
+            type: integer
+        kpis:
+          type: object
+        statusDistribution:
+          type: object
+        quarterlyData:
+          type: object
+        monthlyTrend:
+          type: object
+        programs:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProgramPerformance'
+
+    ProgramDetailResponse:
+      type: object
+      properties:
+        title:
+          type: string
+        description:
+          type: string
+        availableYears:
+          type: array
+          items:
+            type: integer
+        kpis:
+          type: array
+          items:
+            type: object
+        overall:
+          type: object
+        barChartData:
+          type: object
+        departmentStats:
+          type: array
+          items:
+            type: object
+
+    DepartmentDetailResponse:
+      type: object
+      properties:
+        name:
+          type: string
+        availableYears:
+          type: array
+          items:
+            type: integer
+        kpis:
+          type: array
+          items:
+            type: object
+        statusDistribution:
+          type: object
+        weeklyTrend:
+          type: object
+        activities:
+          type: array
+          items:
+            type: object

@@ -35,7 +35,7 @@ class PassthroughRenderer(BaseRenderer):
     Used for image downloads.
     """
     media_type = '*/*'
-    format = None
+    format = 'bin'  # Set format to 'bin' for binary data (compatible with drf-spectacular)
     
     def render(self, data, accepted_media_type=None, renderer_context=None):
         return data

@@ -360,9 +360,9 @@ class ResponseSerializer(serializers.ModelSerializer):
         model = Response
         fields = [
             'id', 'survey', 'respondent', 'respondent_email',
-            'submitted_at', 'is_complete', 'answers'
+            'submitted_at', 'created_at', 'updated_at', 'is_complete', 'answers'
         ]
-        read_only_fields = ['id', 'submitted_at', 'respondent_email']
+        read_only_fields = ['id', 'submitted_at', 'created_at', 'updated_at', 'respondent_email']
     
     def get_respondent_email(self, obj):
         """Get respondent email - either from user, stored email field, or phone"""

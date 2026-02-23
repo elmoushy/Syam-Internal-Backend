@@ -393,6 +393,10 @@ class AdminNotificationCreateView(generics.CreateAPIView):
     
     def get_permissions(self):
         """Restrict to admin users only."""
+        # Skip permission check during schema generation
+        if getattr(self, 'swagger_fake_view', False):
+            return super().get_permissions()
+            
         permissions_list = super().get_permissions()
         
         # Check if user is admin or super admin
