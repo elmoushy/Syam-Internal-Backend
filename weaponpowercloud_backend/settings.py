@@ -90,7 +90,6 @@ INSTALLED_APPS = [
     'quicklinks',  # Quick Links for external app shortcuts with BLOB icon storage
     'internal_chat',  # Internal chat system with WebSocket support
     'Audit.apps.AuditConfig',  # Audit logging system
-    'activities',  # Dynamic activities/templates system with column management
 ]
 
 # Custom User Model Configuration
@@ -627,7 +626,7 @@ INTERNAL_CHAT_MESSAGE_RATE_LIMIT = os.getenv('INTERNAL_CHAT_MESSAGE_RATE_LIMIT',
 # =============================================================================
 SPECTACULAR_SETTINGS = {
     'TITLE': 'WeaponPowerCloud API',
-    'DESCRIPTION': 'API documentation for WeaponPowerCloud Activities System',
+    'DESCRIPTION': 'API documentation for WeaponPowerCloud Backend System',
     'VERSION': '1.0.0',
     'SERVE_INCLUDE_SCHEMA': False,
     'SCHEMA_PATH_PREFIX': r'/api',

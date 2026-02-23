@@ -38,7 +38,6 @@ def api_root(request):
             'internal_chat': '/api/internal-chat/',
             'admin': '/admin/',
             'audit': '/api/audit/',
-            'activities': '/api/activities/',
             'api_docs': '/api/schema/' if settings.DEBUG else None,
             'swagger_ui': '/api/docs/' if settings.DEBUG else None,
             'redoc': '/api/redoc/' if settings.DEBUG else None,
@@ -73,9 +72,6 @@ urlpatterns = [
     path('api/internal-chat/', include('internal_chat.urls', namespace='internal_chat')),
 
     path('api/audit/', include('Audit.urls')),
-
-    # Activities system (dynamic columns, templates, sheets)
-    path('api/activities/', include('activities.urls', namespace='activities')),
 
     # Add your other app URLs here
     # path('api/weapons/', include('weapons.urls')),

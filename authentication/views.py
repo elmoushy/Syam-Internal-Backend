@@ -6,6 +6,7 @@ Supports both Azure AD JWT authentication and regular email/password authenticat
 """
 
 import logging
+import os
 from datetime import timezone
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
@@ -1779,10 +1780,20 @@ class ResetUserPasswordView(APIView):
 class LDAPLoginView(APIView):
     """
     API endpoint for LDAP user login.
+    
+    Controlled by the LDAP_ENABLED environment variable.
+    When LDAP_ENABLED=False, this endpoint returns 503 Service Unavailable.
     """
     permission_classes = [AllowAny]
 
     def post(self, request):
+        # Check if LDAP is enabled
+        ldap_enabled = os.getenv('LDAP_ENABLED', 'True').lower() in ('true', '1', 'yes')
+        if not ldap_enabled:
+            return Response({
+                'detail': 'LDAP authentication is not enabled on this server.'
+            }, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
         username = request.data.get('username')
         password = request.data.get('password')
 

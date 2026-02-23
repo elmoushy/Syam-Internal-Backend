@@ -11,14 +11,20 @@ User = get_user_model()
 class LDAPAuthService:
     """
     Service to handle LDAP authentication and user synchronization.
+    
+    Controlled by the LDAP_ENABLED environment variable.
+    When LDAP_ENABLED=False, authentication will always return (None, None).
     """
     
     def __init__(self):
+        self.enabled = os.getenv('LDAP_ENABLED', 'True').lower() in ('true', '1', 'yes')
         self.server_url = os.getenv('LDAP_SERVER_URL')
         self.domain = os.getenv('LDAP_DOMAIN')
         self.search_base = os.getenv('LDAP_SEARCH_BASE')
         
-        if not self.server_url or not self.domain:
+        if not self.enabled:
+            logger.info("LDAP authentication is disabled (LDAP_ENABLED=False).")
+        elif not self.server_url or not self.domain:
             logger.warning("LDAP configuration missing. Please check environment variables.")
 
     def authenticate(self, username, password):
@@ -32,6 +38,10 @@ class LDAPAuthService:
         Returns:
             tuple: (user, tokens) if successful, (None, None) otherwise
         """
+        if not self.enabled:
+            logger.warning("LDAP authentication is disabled")
+            return None, None
+
         if not self.server_url or not self.domain:
             logger.error("LDAP configuration missing")
             return None, None
